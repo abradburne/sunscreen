@@ -6,7 +6,7 @@ on open theFiles
 		set p to POSIX path of f
 		set outDir to (do shell script "dirname " & quoted form of p) & "/sunscreen"
 		try
-			do shell script bin & " " & quoted form of p & " " & quoted form of outDir & " --smooth --widen --excite"
+			do shell script bin & " " & quoted form of p & " " & quoted form of outDir & " --smooth --widen --excite --match"
 		on error msg
 			display alert "sunscreen failed on " & p message msg
 		end try

@@ -14,7 +14,7 @@ Every stage is there because a measurement on real Suno tracks showed the proble
 brew install abradburne/tap/sunscreen
 ```
 
-**Mac app (no terminal):** download `Sunscreen-<version>-macos.zip` from the GitHub Releases page, unzip, and move `Sunscreen.app` to Applications. Drop MP3 or WAV files on its icon; results land in a `sunscreen` folder next to each file (recommended settings: `--smooth --widen --excite`), and Finder opens it when done. The app isn't notarised, so the first time, run `xattr -dr com.apple.quarantine /Applications/Sunscreen.app` (or right-click → Open).
+**Mac app (no terminal):** download `Sunscreen-<version>-macos.zip` from the GitHub Releases page, unzip, and move `Sunscreen.app` to Applications. Drop MP3 or WAV files on its icon; results land in a `sunscreen` folder next to each file (recommended settings: `--smooth --widen --excite --match`), and Finder opens it when done. The app isn't notarised, so the first time, run `xattr -dr com.apple.quarantine /Applications/Sunscreen.app` (or right-click → Open).
 
 **Prebuilt binaries:** grab the archive for your platform from the GitHub Releases page (macOS arm64/x86_64, Linux x86_64/arm64, Windows x86_64), unpack it, and put `sunscreen` on your PATH. On macOS, clear the download quarantine once: `xattr -d com.apple.quarantine sunscreen`.
 
@@ -28,7 +28,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install --path .
 
 # recommended: everything on
-sunscreen "My Song.mp3" out --smooth --widen --excite
+sunscreen "My Song.mp3" out --smooth --widen --excite --match
 ```
 
 A 5-minute track takes about 10 seconds on a laptop.
@@ -36,7 +36,7 @@ A 5-minute track takes about 10 seconds on a laptop.
 Do a whole folder:
 
 ```sh
-for f in *.mp3; do sunscreen "$f" cleaned "${f%.mp3}" --smooth --widen --excite; done
+for f in *.mp3; do sunscreen "$f" cleaned "${f%.mp3}" --smooth --widen --excite --match; done
 ```
 
 ## Usage
@@ -150,7 +150,7 @@ The run prints the applied correction at 63 Hz to 16 kHz.
 
 **Measured:** for each Suno track, the built-in target's correction lands within 0.7 dB of the average of 12 single-reference corrections.
 
-**Status:** opt-in. It's mastering, not cleaning, so it's a taste call. Try it against a song you love in your genre: `--match="Reference Song.wav"`.
+**Status:** opt-in, in the recommended command. To aim at your own genre instead, match a song you love: `--match="Reference Song.wav"`.
 
 ## A/B workflow
 
