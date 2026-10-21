@@ -20,16 +20,16 @@ Every step exists because a measurement on real Suno tracks showed the problem. 
 
 ## Hear it
 
-30 seconds of *Glass Hearts & Gasoline* (a Suno track; hear the whole song and the rest of the release at [sidetrax.fm/releases/love-this](https://sidetrax.fm/releases/love-this)), full chain `--smooth --widen --excite --match --master` (16-bit FLAC; the links download):
+30 seconds of *Glass Hearts & Gasoline* (a Suno track; hear the whole song and the rest of the release at [sidetrax.fm/releases/love-this](https://sidetrax.fm/releases/love-this)), processed with sunscreen v0.6 and the recommended chain `--smooth --widen --excite --match --master` (debuzz runs automatically). 16-bit FLAC; the links download:
 
-- [Before](https://github.com/abradburne/sunscreen/releases/download/v0.4.0/glass-hearts-30s-before.flac): the Suno MP3, untouched
-- [After](https://github.com/abradburne/sunscreen/releases/download/v0.4.0/glass-hearts-30s-after.flac): sunscreen's output
-- [After + mastering](https://github.com/abradburne/sunscreen/releases/download/v0.5.0/glass-hearts-30s-after-mastered.flac): the same chain plus `--master=-9`, loud like a commercial single (−9 LUFS, −1 dBTP)
-- [Removed](https://github.com/abradburne/sunscreen/releases/download/v0.4.0/glass-hearts-30s-removed.flac): what the denoiser took out (it should sound like hiss, not music)
+- [Before](https://github.com/abradburne/sunscreen/releases/download/v0.6.0/glass-hearts-30s-before.flac): the Suno MP3, untouched
+- [After](https://github.com/abradburne/sunscreen/releases/download/v0.6.0/glass-hearts-30s-after.flac): sunscreen's output (−14 LUFS)
+- [After + mastering](https://github.com/abradburne/sunscreen/releases/download/v0.6.0/glass-hearts-30s-after-mastered.flac): the same chain mastered louder with `--master=-9`, like a commercial single (−9 LUFS, −1 dBTP)
+- [Removed](https://github.com/abradburne/sunscreen/releases/download/v0.6.0/glass-hearts-30s-removed.flac): what debuzz and the denoiser took out (it should sound like hiss and a faint buzz, not music)
 
 ![Spectrograms: before, after, removed](docs/img/before-after.jpg)
 
-*Top: before. The MP3 stops dead at 18 kHz. Middle: after. The top octave is rebuilt up to 22 kHz, and the tonal balance is matched. Bottom: what was removed. Broadband haze, with dark gaps where drum hits were protected, and almost nothing below 300 Hz.*
+*Top: before. The MP3 stops dead at 18 kHz. Middle: after. The top octave is rebuilt up to 22 kHz, and the tonal balance is matched. Bottom: what was removed. The decoder buzz runs through the whole clip as a fine comb of steady horizontal lines (multiples of 200 Hz), over the broadband haze.*
 
 ## Quick start
 
