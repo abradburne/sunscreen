@@ -42,7 +42,7 @@ for f in *.mp3; do sunscreen "$f" cleaned "${f%.mp3}" --smooth --widen --excite;
 ## Usage
 
 ```
-sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]]
+sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]]
 ```
 
 | Argument | Default | Meaning |
@@ -67,7 +67,7 @@ Each run always writes:
 Each optional stage then writes a **cumulative** file, so you can A/B one step at a time:
 
 ```
-Clean → Clean+smooth → Clean+smooth+widen → Clean+smooth+widen+excite
+Clean → Clean+smooth → Clean+smooth+widen → Clean+smooth+widen+excite → …+match
 ```
 
 The stages always run in that order. A file name lists only the stages you turned on, so `--widen --excite` gives `Clean+widen` and `Clean+widen+excite`.
@@ -136,6 +136,22 @@ If no cutoff is found, the stage is skipped.
 
 **Limit:** it adds plausible "air", not the real lost detail. If cymbals turn metallic, try `--excite=-6` or `-9`.
 
+### `--match[=ref.wav]` — tonal balance like a commercial master
+
+**Problem:** every Suno track comes out with its own tonal tilt, and they don't share one. Against 12 commercially mastered pop tracks, Glass Hearts wants 2–3 kHz pulled down about 2 dB, while French Exit wants that region lifted about 5 dB. A fixed "de-Suno EQ" would fix one and wreck the other.
+
+**How:** compares the track's long-term spectrum with a target and applies the difference as a static EQ:
+- **Target:** with plain `--match`, the built-in average of those 12 masters (they agree within 1–2.7 dB from 125 Hz to 10 kHz). With `--match=song.wav`, that one track instead.
+- **Smooth and gentle:** the correction is averaged over one octave, so it shapes tone rather than notching notes, and capped at ±3 dB.
+- **Level-neutral:** the overall RMS doesn't change; it only rebalances.
+- **Range:** 40 Hz to 12 kHz, fading out beyond. Above 12 kHz the references disagree too much to be a target, and the exciter owns that region anyway.
+
+The run prints the applied correction at 63 Hz to 16 kHz.
+
+**Measured:** for each Suno track, the built-in target's correction lands within 0.7 dB of the average of 12 single-reference corrections.
+
+**Status:** opt-in. It's mastering, not cleaning, so it's a taste call. Try it against a song you love in your genre: `--match="Reference Song.wav"`.
+
 ## A/B workflow
 
 1. Load the original, `Clean`, and each `Clean+…` file into your DAW, level-matched.
@@ -155,6 +171,10 @@ Each one prints a measurement and exits without writing audio. They're how every
 | `--attacks` | Median 10–90% attack rise time and energy before the peak at detected hits | **Regression check**: make sure the chain doesn't dull drums |
 | `--holes` | Rate of MP3 "spectral holes" per band | Only matters for files at 96 kbps or below |
 | `--phase` | Phase coherence around tonal peaks | Spot "phasey" sustained notes |
+| `--modspec` | How the haze level fluctuates (modulation spectrum), with readings at neural-codec and MP3/AAC frame rates | Look for a codec fingerprint (none found on Suno) |
+| `--floors` | Noise floor against music level, loud to quiet | Check whether haze is a fixed floor or follows the music (on Suno: follows it) |
+| `--tone=ref.wav` | The uncapped `--match` correction (`--tone=pop` for the built-in target) | See how a track's balance differs from a reference without rendering |
+| `--profile` | Third-octave long-term spectrum | Build your own target from tracks you like |
 | `--repeats` | How similar repeated sections are, and whether their waveforms line up | Explains why repeat-averaging can't work on Suno |
 
 ```sh
@@ -173,6 +193,8 @@ Beyond the flags, the knobs are constants near the top of `src/main.rs` (rebuild
 | `SMOOTH_SNR`, `SMOOTH_LIMIT_DB` | 4×, ±6 dB | Which bins count as haze, and how far smoothing may move them |
 | `WIDEN_FROM_HZ`, `WIDEN_MAX_G`, `WIDEN_DELAY_MS` | 10 kHz, 0.5, 5 ms | Where widening starts, its cap, and the decorrelation delay |
 | `CUTOFF_DROP_DB`, `EXCITE_TOP_HZ` | 25 dB, 22 kHz | Cutoff detection, and how high the exciter fills |
+| `MATCH_MAX_DB`, `MATCH_SMOOTH_OCT`, `MATCH_RANGE` | ±3 dB, 1 octave, 40 Hz–12 kHz | How far, how smoothly, and where `--match` corrects |
+| `POP_TARGET` | 12-track average | The built-in `--match` target; replace with your own `--profile` averages |
 
 ## What it can't do
 

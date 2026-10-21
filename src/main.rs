@@ -1,6 +1,6 @@
 //! Adaptive spectral denoise for Suno renders: rolling-percentile noise floor,
 //! linked-stereo power-subtraction mask, original phase kept.
-//! Usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]]
+//! Usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]]
 
 use realfft::RealFftPlanner;
 use realfft::num_complex::Complex;
@@ -47,6 +47,38 @@ const GATE_DILATE: usize = 2; // bins and frames
 const ALPHA_RAMP: (f64, f64) = (3500.0, 7000.0);
 // (freq Hz, max attenuation dB) knots; flat between pairs, log-freq raised cosine across gaps
 const FLOOR_KNOTS: [(f64, f64); 4] = [(300.0, 1.0), (450.0, 3.5), (3500.0, 3.5), (7000.0, 7.0)];
+// --match: largest correction, smoothing span, and where it applies (fades to 0
+// half an octave outside, so it never fights the codec lowpass or the exciter)
+const MATCH_MAX_DB: f64 = 3.0;
+const MATCH_SMOOTH_OCT: f64 = 1.0;
+const MATCH_RANGE: (f64, f64) = (40.0, 12000.0); // the 12 references disagree by 3-4.6 dB above 12 kHz
+// Mean third-octave long-term spectrum of 12 commercially mastered pop tracks
+// (Ariana Grande, milet, Hikaru Utada / Utada; `--profile`), 0 dB = 125 Hz - 8 kHz
+// mean. Per-point spread across the 12 is 1-2.7 dB from 125 Hz to 10 kHz.
+const POP_TARGET: [(f64, f64); 28] = [(32.0, 16.3), (40.0, 18.1), (50.0, 18.1), (63.0, 18.1), (79.0, 17.0), (100.0, 14.6), (126.0, 12.4), (159.0, 9.6), (200.0, 6.8), (252.0, 5.9), (318.0, 5.2), (400.0, 5.3), (504.0, 4.7), (635.0, 3.0), (800.0, 4.2), (1008.0, 3.3), (1270.0, -0.3), (1600.0, -1.0), (2016.0, -2.8), (2540.0, -5.1), (3200.0, -6.0), (4032.0, -8.1), (5080.0, -10.8), (6400.0, -12.8), (8064.0, -13.6), (10160.0, -15.0), (12801.0, -18.2), (16128.0, -23.5)];
+
+/// POP_TARGET at any frequency: linear in log frequency, held flat past the ends.
+fn pop_target(h: f64) -> f64 {
+    let t = &POP_TARGET;
+    if h <= t[0].0 { return t[0].1; }
+    t.windows(2).find(|w| h <= w[1].0).map_or(t[t.len() - 1].1, |w| {
+        let a = (h / w[0].0).log2() / (w[1].0 / w[0].0).log2();
+        w[0].1 + a * (w[1].1 - w[0].1)
+    })
+}
+
+/// A reference track's long-term spectrum as a target function of Hz.
+fn ltas_target(r: &[Vec<f64>], rsr: u32) -> impl Fn(f64) -> f64 {
+    let rp = params_for(rsr);
+    let rl = ltas(&Stft::new(rp.n, rp.hop, r[0].len()), r);
+    move |h: f64| {
+        let k = (h * rp.n as f64 / rsr as f64).min((rl.len() - 1) as f64);
+        let i = (k as usize).min(rl.len() - 2);
+        rl[i] + (rl[i + 1] - rl[i]) * (k - i as f64)
+    }
+}
+
+const TONE_HZ: [f64; 10] = [63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 3000.0, 4000.0, 8000.0, 12000.0];
 const BANDS: [(f64, f64); 5] = [(0.0, 350.0), (350.0, 3500.0), (3500.0, 7000.0), (7000.0, 12000.0), (12000.0, f64::MAX)];
 
 fn params_for(sr: u32) -> Params {
@@ -807,6 +839,89 @@ fn audibility(p: &Params, x: &[Vec<f64>], sr: u32) -> [f64; 3] {
 }
 
 /// Core DSP. Returns (clean, gain mask [frames][bins], stft geometry).
+/// Modulation spectrum of each high band's log-power envelope (~1 kHz envelope
+/// rate, 4 s Welch segments, 0.25 Hz resolution). A codec running at a fixed
+/// frame rate leaves a sharp peak at that rate; music modulates at beat and
+/// syllable rates or in broad humps. Returns (envelope rate, per-band spectra).
+fn modspec(x: &[Vec<f64>], sr: u32) -> (f64, Vec<Vec<f64>>) {
+    let len = x[0].len();
+    let n = len.next_power_of_two();
+    let mut buf: Vec<f64> = (0..n).map(|i| if i < len { x.iter().map(|c| c[i]).sum::<f64>() / x.len() as f64 } else { 0.0 }).collect();
+    let mut planner = RealFftPlanner::<f64>::new();
+    let (fwd, inv) = (planner.plan_fft_forward(n), planner.plan_fft_inverse(n));
+    let mut spec = fwd.make_output_vec();
+    fwd.process(&mut buf, &mut spec).unwrap();
+    let hz = sr as f64 / n as f64;
+    let dec = sr as usize / 1000;
+    let (seg, rate) = (4000, sr as f64 / dec as f64);
+    let win = hann(seg);
+    let seg_fft = planner.plan_fft_forward(seg);
+    let bands = BANDS[2..].iter().map(|&(lo, hi)| {
+        let mut s: Vec<Complex<f64>> = spec.iter().enumerate()
+            .map(|(k, &c)| if (lo..hi).contains(&(k as f64 * hz)) { c } else { Complex::new(0.0, 0.0) }).collect();
+        if let Some(last) = s.last_mut() { last.im = 0.0; }
+        let mut band = inv.make_output_vec();
+        inv.process(&mut s, &mut band).unwrap();
+        // log so loud sections don't dominate the average
+        let env: Vec<f64> = band[..len].chunks_exact(dec).map(|c| (c.iter().map(|v| v * v).sum::<f64>() + 1e-30).ln()).collect();
+        let mut acc = vec![0.0; seg / 2 + 1];
+        let mut out = seg_fft.make_output_vec();
+        for start in (0..env.len().saturating_sub(seg)).step_by(seg / 2) {
+            let w = &env[start..start + seg];
+            let mean = w.iter().sum::<f64>() / seg as f64;
+            let mut frame: Vec<f64> = w.iter().zip(&win).map(|(v, h)| (v - mean) * h).collect();
+            seg_fft.process(&mut frame, &mut out).unwrap();
+            for (a, c) in acc.iter_mut().zip(&out) { *a += c.norm_sqr(); }
+        }
+        acc
+    }).collect();
+    (rate, bands)
+}
+
+/// Peak prominence in dB at bin k: power over the median of +-5 Hz around it
+/// (excluding +-1 Hz), taking the best bin within +-1 of k.
+fn prominence(spec: &[f64], k: usize, bins_per_hz: f64) -> f64 {
+    let (near, far) = (bins_per_hz.round() as usize, (5.0 * bins_per_hz).round() as usize);
+    if k < far || k + far >= spec.len() { return 0.0; }
+    let mut ring: Vec<f64> = (k - far..=k + far).filter(|&j| j.abs_diff(k) > near).map(|j| spec[j]).collect();
+    ring.sort_by(f64::total_cmp);
+    let peak = (k - 1..=k + 1).map(|j| spec[j]).fold(0.0, f64::max);
+    10.0 * (peak / ring[ring.len() / 2]).log10()
+}
+
+/// Static EQ curve (dB per bin) toward a target long-term spectrum (dB at Hz):
+/// smoothed over MATCH_SMOOTH_OCT octaves, level-neutral (the track-energy-
+/// weighted mean correction is removed, so RMS stays put), capped at
+/// +-MATCH_MAX_DB and faded out beyond MATCH_RANGE.
+fn match_curve(p: &Params, x: &[Vec<f64>], sr: u32, target: impl Fn(f64) -> f64, cap: f64) -> Vec<f64> {
+    let lt = ltas(&Stft::new(p.n, p.hop, x[0].len()), x);
+    let hz = |f: usize| f as f64 * sr as f64 / p.n as f64;
+    let raw: Vec<f64> = (0..lt.len()).map(|f| target(hz(f)) - lt[f]).collect();
+    let half = 2f64.powf(MATCH_SMOOTH_OCT / 2.0);
+    let mut c: Vec<f64> = (0..lt.len()).map(|f| {
+        let (a, b) = (((f as f64 / half).floor() as usize).max(1), ((f as f64 * half).ceil() as usize).clamp(1, lt.len() - 1));
+        raw[a..=b].iter().sum::<f64>() / (b - a + 1) as f64
+    }).collect();
+    let fade = |h: f64| (1.0 - (2.0 * (MATCH_RANGE.0 / h.max(1.0)).log2()).max(0.0) - (2.0 * (h / MATCH_RANGE.1).log2()).max(0.0)).clamp(0.0, 1.0);
+    let (num, den) = (0..c.len()).filter(|&f| fade(hz(f)) == 1.0).fold((0.0, 0.0), |(n, d), f| { let w = 10f64.powf(lt[f] / 10.0); (n + w * c[f], d + w) });
+    for (f, v) in c.iter_mut().enumerate() { *v = (*v - num / den).clamp(-cap, cap) * fade(hz(f)); }
+    c
+}
+
+/// Third-octave band levels (dB, mean power per bin) from 31.5 Hz to 16 kHz,
+/// shifted so the 125 Hz - 8 kHz points average 0 dB.
+fn third_octaves(lt: &[f64], sr: u32, n: usize) -> Vec<(f64, f64)> {
+    let mut v: Vec<(f64, f64)> = (0..30).map(|i| 31.5 * 2f64.powf(i as f64 / 3.0)).filter(|h| *h <= 16500.0).map(|h| {
+        let bin = |f: f64| ((f * n as f64 / sr as f64).round() as usize).clamp(1, lt.len() - 1);
+        let (a, b) = (bin(h / 2f64.powf(1.0 / 6.0)), bin(h * 2f64.powf(1.0 / 6.0)).max(bin(h / 2f64.powf(1.0 / 6.0))));
+        (h, 10.0 * (lt[a..=b].iter().map(|d| 10f64.powf(d / 10.0)).sum::<f64>() / (b - a + 1) as f64).log10())
+    }).collect();
+    let mid: Vec<f64> = v.iter().filter(|(h, _)| (120.0..8500.0).contains(h)).map(|(_, d)| *d).collect();
+    let off = mid.iter().sum::<f64>() / mid.len() as f64;
+    v.iter_mut().for_each(|(_, d)| *d -= off);
+    v
+}
+
 fn denoise(p: &Params, x: &[Vec<f64>], sr: u32) -> (Vec<Vec<f64>>, Vec<f32>, Stft) {
     let st = Stft::new(p.n, p.hop, x[0].len());
     let (frames, bins) = (st.frames, st.bins());
@@ -850,7 +965,7 @@ fn denoise(p: &Params, x: &[Vec<f64>], sr: u32) -> (Vec<Vec<f64>>, Vec<f32>, Stf
     if let Some(a) = &audible { gdb.iter_mut().zip(a).for_each(|(g, w)| *g *= w); }
     let protect = if p.protect_onsets { onset_weights(&power, frames, bins, sr as f64 / p.n as f64) } else { vec![0.0; frames] };
     let hits = protect.iter().filter(|w| **w == 1.0).count() / 2; // two full-weight frames per hit
-    if p.protect_onsets { println!("onsets     {hits} protected ({:.1}/s)", hits as f64 / (frames * p.hop) as f64 * sr as f64); }
+    if p.protect_onsets { say!("onsets     {hits} protected ({:.1}/s)", hits as f64 / (frames * p.hop) as f64 * sr as f64); }
     let gain: Vec<f32> = gdb.iter().enumerate().map(|(i, d)| {
         let g = (10f64.powf(*d as f64 / 20.0)).clamp(floor_g[i % bins], 1.0);
         (g + protect[i / bins] * (1.0 - g)) as f32
@@ -861,7 +976,7 @@ fn denoise(p: &Params, x: &[Vec<f64>], sr: u32) -> (Vec<Vec<f64>>, Vec<f32>, Stf
 
 fn main() {
     let (flags, args): (Vec<String>, Vec<String>) = std::env::args().partition(|a| a.starts_with("--"));
-    if args.len() < 2 { eprintln!("usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]]"); std::process::exit(2); }
+    if args.len() < 2 { eprintln!("usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]]"); std::process::exit(2); }
     // --excite alone = default level; --excite=-6 = 6 dB under the extrapolated slope
     // --smooth alone = default window; --smooth=150 = 150 ms
     let smooth_ms = flags.iter().find_map(|f| f.strip_prefix("--smooth"))
@@ -871,6 +986,8 @@ fn main() {
         .map(|v| v.strip_prefix('=').map_or(1.0, |n| n.parse().expect("--widen=<amount>")));
     let excite_db = flags.iter().find_map(|f| f.strip_prefix("--excite"))
         .map(|v| v.strip_prefix('=').map_or(EXCITE_DEFAULT_DB, |n| n.parse().expect("--excite=<dB>")));
+    // --match alone = built-in pop target; --match=ref.wav = that track
+    let match_ref = flags.iter().find_map(|f| f.strip_prefix("--match")).map(|v| v.strip_prefix('=').map(|r| read_audio(Path::new(r))));
     let input = Path::new(&args[1]);
     let out_dir = args.get(2).map(Path::new).unwrap_or(input.parent().unwrap());
     let title = args.get(3).cloned().unwrap_or_else(|| input.file_stem().unwrap().to_string_lossy().into());
@@ -924,6 +1041,60 @@ fn main() {
         let pct = |q: f64| sims[((sims.len() - 1) as f64 * q) as usize];
         say!("repeats    best-match similarity over {} segments: p10 {:.3} | p50 {:.3} | p90 {:.3} | max {:.3}", sims.len(), pct(0.1), pct(0.5), pct(0.9), pct(1.0));
         say!("coherence  top-200 aligned pairs: {}", coh.iter().zip(BANDS).map(|(c, (lo, _))| format!("{lo:>5.0}+ {c:.3}")).collect::<Vec<_>>().join(" | "));
+        return;
+    }
+    if flags.iter().any(|f| f == "--modspec") {
+        let (rate, bands) = modspec(&x, sr);
+        let bph = 4000.0 / rate;
+        // candidate frame rates: neural codecs, then MP3 frame/granule and AAC frame at this sr
+        let s = sr as f64;
+        let cands = [("50", 50.0), ("EnCodec 75", 75.0), ("DAC 86.1", 86.13), ("sr/512", s / 512.0), ("MP3 sr/1152", s / 1152.0), ("MP3 sr/576", s / 576.0), ("AAC sr/1024", s / 1024.0)];
+        for (spec, (lo, _)) in bands.iter().zip(&BANDS[2..]) {
+            let prom: Vec<f64> = (0..spec.len()).map(|k| prominence(spec, k, bph)).collect();
+            let mut peaks: Vec<usize> = ((5.0 * bph) as usize..(400.0 * bph) as usize)
+                .filter(|&k| prom[k] > 3.0 && spec[k] >= spec[k - 1] && spec[k] >= spec[k + 1]).collect();
+            peaks.sort_by(|&a, &b| prom[b].total_cmp(&prom[a]));
+            say!("modspec {lo:>5.0}+ top: {}", peaks.iter().take(6).map(|&k| format!("{:.2} Hz {:+.1}", k as f64 / bph, prom[k])).collect::<Vec<_>>().join(" | "));
+            say!("        {lo:>5.0}+ at: {}", cands.iter().map(|(name, f)| format!("{name} {:+.1}", prominence(spec, (f * bph).round() as usize, bph))).collect::<Vec<_>>().join(" | "));
+        }
+        return;
+    }
+    if let Some(r) = flags.iter().find_map(|f| f.strip_prefix("--tone=")) {
+        // uncapped --match curve against a reference, per third-octave-ish point
+        let c = if r == "pop" { match_curve(&p, &x, sr, pop_target, f64::INFINITY) } else { let (r, rsr) = read_audio(Path::new(r)); match_curve(&p, &x, sr, ltas_target(&r, rsr), f64::INFINITY) };
+        let at = |h: f64| c[((h * p.n as f64 / sr as f64).round() as usize).min(c.len() - 1)];
+        say!("tone       {}", TONE_HZ.iter().map(|&h| format!("{:+.1}", at(h))).collect::<Vec<_>>().join(" "));
+        return;
+    }
+    if flags.iter().any(|f| f == "--profile") {
+        // third-octave long-term spectrum, 0 dB = mean of the 125 Hz - 8 kHz points
+        let lt = ltas(&Stft::new(p.n, p.hop, len), &x);
+        let v = third_octaves(&lt, sr, p.n);
+        say!("profile    {}", v.iter().map(|(h, d)| format!("{h:.0}:{d:.2}")).collect::<Vec<_>>().join(" "));
+        return;
+    }
+    if flags.iter().any(|f| f == "--floors") {
+        // Per 1 s block and band: level L (mean power) and floor F (15th percentile
+        // over the block's frames x bins). Additive haze pins quiet blocks at F ~ L
+        // with L bottoming out; haze that scales with the music keeps F/L constant.
+        let st = Stft::new(p.n, p.hop, len);
+        let (frames, bins) = (st.frames, st.bins());
+        let power = power_grid(&st, &x);
+        let per = (sr as usize / p.hop).max(1);
+        let bin_of = |f: f64| ((f * p.n as f64 / sr as f64) as usize).min(bins);
+        for &(lo, hi) in &BANDS[2..] {
+            let (a, b) = (bin_of(lo), bin_of(hi.min(sr as f64 / 2.0)));
+            let mut blocks: Vec<(f64, f64)> = (0..frames / per).map(|k| {
+                let mut v: Vec<f32> = (k * per..(k + 1) * per).flat_map(|t| power[t * bins + a..t * bins + b].iter().copied()).collect();
+                let l = v.iter().map(|&q| q as f64).sum::<f64>() / v.len() as f64;
+                let i = (v.len() as f64 * 0.15) as usize;
+                let f = *v.select_nth_unstable_by(i, f32::total_cmp).1 as f64;
+                (10.0 * (l + 1e-30).log10(), 10.0 * ((f + 1e-30) / (l + 1e-30)).log10())
+            }).filter(|(l, _)| *l > -200.0).collect();
+            blocks.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let q = |i: usize| { let c = &blocks[i * blocks.len() / 5..(i + 1) * blocks.len() / 5]; (c.iter().map(|b| b.0).sum::<f64>() / c.len() as f64, c.iter().map(|b| b.1).sum::<f64>() / c.len() as f64) };
+            say!("floors {lo:>5.0}+ quintile level / floor-to-level: {}", (0..5).map(|i| { let (l, r) = q(i); format!("{l:6.1} dB {r:+5.1}") }).collect::<Vec<_>>().join(" | "));
+        }
         return;
     }
     if flags.iter().any(|f| f == "--holes") {
@@ -1018,6 +1189,18 @@ fn main() {
             Some(ex)
         }
     });
+    if let Some(m) = &match_ref {
+        let curve = match m {
+            Some((r, rsr)) => match_curve(&p, &stage, sr, ltas_target(r, *rsr), MATCH_MAX_DB),
+            None => match_curve(&p, &stage, sr, pop_target, MATCH_MAX_DB),
+        };
+        let hz_bin = |h: f64| ((h * p.n as f64 / sr as f64).round() as usize).min(curve.len() - 1);
+        say!("match      {}", [63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0].iter().map(|&h| format!("{:.0} Hz {:+.1}", h, curve[hz_bin(h)])).collect::<Vec<_>>().join(" | "));
+        let st = Stft::new(p.n, p.hop, len);
+        let g: Vec<f64> = curve.iter().map(|d| 10f64.powf(d / 20.0)).collect();
+        let m = stage.iter().map(|c| st.resynth(c, |_, s| s.iter_mut().zip(&g).for_each(|(v, g)| *v *= g))).collect();
+        emit("match", m, &mut stage);
+    }
     let mut panels = vec![mono(&x), mono(&removed)];
     if let Some(ex) = &excited { panels.push(mono(ex)); }
     spectrogram_png(&png_path, &panels.iter().map(|v| v.as_slice()).collect::<Vec<_>>(), p.n, p.hop);
@@ -1175,5 +1358,43 @@ mod tests {
         let (exposed_off, exposed_on) = (removed(false, 8000.0, 16000.0), removed(true, 8000.0, 16000.0));
         assert!(masked_on < 0.5 * masked_off, "masked removal {masked_off} -> {masked_on}");
         assert!(exposed_on > 0.9 * exposed_off, "exposed removal {exposed_off} -> {exposed_on}");
+    }
+
+    #[test]
+    fn modspec_finds_frame_rate_flutter() {
+        let sr = 48000u32;
+        let n = 20 * sr as usize;
+        let mut seed = 5u64;
+        let mut rnd = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1); (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5 };
+        let noise: Vec<f64> = (0..n).map(|_| rnd()).collect();
+        // 10% amplitude flutter at 75 Hz, like a codec frame grid would leave
+        let am: Vec<f64> = noise.iter().enumerate().map(|(i, v)| v * (1.0 + 0.1 * (2.0 * PI * 75.0 * i as f64 / sr as f64).sin())).collect();
+        let at75 = |x: &[f64]| { let (rate, b) = modspec(&[x.to_vec()], sr); b.iter().map(|s| prominence(s, (75.0 * 4000.0 / rate).round() as usize, 4000.0 / rate)).collect::<Vec<_>>() };
+        for (flat, mod_) in at75(&noise).into_iter().zip(at75(&am)) {
+            assert!(flat < 4.0, "steady noise shows {flat} dB at 75 Hz");
+            assert!(mod_ > 10.0, "75 Hz flutter only {mod_} dB");
+        }
+    }
+
+    #[test]
+    fn match_follows_reference_tilt_capped() {
+        let sr = 48000u32;
+        let n = 10 * sr as usize;
+        let mut seed = 9u64;
+        let mut rnd = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1); (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5 };
+        let x: Vec<Vec<f64>> = vec![(0..n).map(|_| 0.1 * rnd()).collect()];
+        let p = params_for(sr);
+        let st = Stft::new(p.n, p.hop, n);
+        let hz = |f: usize| f as f64 * sr as f64 / p.n as f64;
+        // reference = same noise with a smooth tilt of `db` around 1 kHz
+        let tilted = |db: f64| vec![st.resynth(&x[0], |_, s| for (f, v) in s.iter_mut().enumerate() { *v *= 10f64.powf(db * (hz(f).max(1.0) / 1000.0).log2().tanh() / 20.0); })];
+        let at = |c: &[f64], h: f64| c[(h * p.n as f64 / sr as f64).round() as usize];
+        let c = match_curve(&p, &x, sr, ltas_target(&tilted(1.5), sr), MATCH_MAX_DB);
+        let want = 1.5 * (2f64.tanh() - (-2f64).tanh());
+        let got = at(&c, 4000.0) - at(&c, 250.0);
+        assert!((got - want).abs() < 0.6, "tilt 250 Hz -> 4 kHz: got {got:.2}, want {want:.2}");
+        let c = match_curve(&p, &x, sr, ltas_target(&tilted(12.0), sr), MATCH_MAX_DB);
+        assert!(c.iter().all(|v| v.abs() <= MATCH_MAX_DB + 1e-9), "cap exceeded: {:?}", c.iter().enumerate().filter(|(_, v)| !(v.abs() <= MATCH_MAX_DB + 1e-9)).take(5).collect::<Vec<_>>());
+        assert!(at(&c, 23000.0).abs() < 1e-9, "should fade out half an octave above MATCH_RANGE");
     }
 }
