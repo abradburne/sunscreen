@@ -62,7 +62,7 @@ All processing is done in the short-time Fourier transform (STFT) domain with th
  24-bit WAV (write_wav24), one cumulative file per enabled stage
 ```
 
-The order is fixed: debuzz, denoise, smooth, widen, excite, match, master. Each optional stage takes the previous stage's output (`stage` in `main`), and each writes its own file (`Clean+smooth`, `Clean+smooth+widen`, ...), so you can audition one step at a time.
+The order is fixed: debuzz, denoise, smooth, widen, excite, match, master. Each optional stage takes the previous stage's output (`stage` in `main`), and each writes its own file (`Clean+smooth`, `Clean+smooth+widen`, ...), so you can audition one step at a time. Every written file (Clean and each stage) gets a 5 ms raised-cosine fade at both ends (`edge_fade`), because Suno files often start or stop mid-sound and click; Clean is faded before Removed is taken, so the two still sum to the original exactly.
 
 ## Pages
 

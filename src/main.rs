@@ -94,6 +94,12 @@ const DEBUZZ_HZ: u32 = 200;
 const DEBUZZ_MIN_DB: f64 = 6.0;
 const DEBUZZ_WINDOW_S: f64 = 4.0;
 
+// Suno files often start or stop mid-sound (first sample up to -14 dBFS, last
+// 100 ms still at -20 dBFS); human masters start and end on digital silence.
+// A short raised-cosine fade at each end removes the click without softening
+// an opening downbeat audibly.
+const EDGE_FADE_MS: f64 = 5.0;
+
 const TONE_HZ: [f64; 10] = [63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 3000.0, 4000.0, 8000.0, 12000.0];
 const BANDS: [(f64, f64); 5] = [(0.0, 350.0), (350.0, 3500.0), (3500.0, 7000.0), (7000.0, 12000.0), (12000.0, f64::MAX)];
 
@@ -1134,6 +1140,19 @@ fn debuzz(x: &[Vec<f64>], sr: u32, per: usize) -> Vec<Vec<f64>> {
     }).collect()
 }
 
+/// Raised-cosine fade over EDGE_FADE_MS at both ends, in place.
+fn edge_fade(x: &mut [Vec<f64>], sr: u32) {
+    let n = ((EDGE_FADE_MS * 1e-3 * sr as f64) as usize).min(x[0].len() / 2);
+    for c in x.iter_mut() {
+        let len = c.len();
+        for i in 0..n {
+            let g = 0.5 - 0.5 * (PI * i as f64 / n as f64).cos();
+            c[i] *= g;
+            c[len - 1 - i] *= g;
+        }
+    }
+}
+
 fn denoise(p: &Params, x: &[Vec<f64>], sr: u32) -> (Vec<Vec<f64>>, Vec<f32>, Stft) {
     let st = Stft::new(p.n, p.hop, x[0].len());
     let (frames, bins) = (st.frames, st.bins());
@@ -1341,7 +1360,12 @@ fn main() {
             }
         }
     };
-    let (clean, gain, st) = denoise(&p, xin.as_ref().unwrap_or(&x), sr);
+    let (mut clean, gain, st) = denoise(&p, xin.as_ref().unwrap_or(&x), sr);
+    let edge_db = |i: usize| 20.0 * x.iter().map(|c| c[i].abs()).fold(0.0, f64::max).max(1e-12).log10();
+    let (first_db, last_db) = (edge_db(0), edge_db(len - 1));
+    say!("edges      first sample {first_db:.1} dBFS, last {last_db:.1} dBFS{}", if first_db.max(last_db) > -60.0 { format!(" -> {EDGE_FADE_MS} ms fades remove the click") } else { String::new() });
+    // fade before Removed is taken, so Clean + Removed is still exactly the original
+    edge_fade(&mut clean, sr);
     let removed: Vec<Vec<f64>> = x.iter().zip(&clean).map(|(o, c)| o.iter().zip(c).map(|(a, b)| a - b).collect()).collect();
 
     let clean_path = out_dir.join(format!("{title} - Clean.wav"));
@@ -1385,7 +1409,8 @@ fn main() {
     // optional stages chain, each writing a cumulative file for A/B: Clean+smooth+widen+excite
     let mut stage = clean.clone();
     let mut name = String::from("Clean");
-    let mut emit = |tag: &str, sig: Vec<Vec<f64>>, stage: &mut Vec<Vec<f64>>| {
+    let mut emit = |tag: &str, mut sig: Vec<Vec<f64>>, stage: &mut Vec<Vec<f64>>| {
+        edge_fade(&mut sig, sr);
         name.push('+');
         name.push_str(tag);
         let path = out_dir.join(format!("{title} - {name}.wav"));
@@ -1689,5 +1714,20 @@ mod tests {
         // noise is only what falls in the notches, ~28 dB under it (the pattern is -26 dB)
         let err: Vec<Vec<f64>> = y.iter().zip(&noise).map(|(a, b)| a.iter().zip(b).map(|(u, v)| u - v).collect()).collect();
         assert!(rms(&err) < 0.06 * rms(&noise), "residual {} vs noise {}", rms(&err), rms(&noise));
+    }
+
+    #[test]
+    fn edge_fade_silences_ends_only() {
+        let sr = 48000u32;
+        let x0: Vec<Vec<f64>> = vec![vec![0.5; sr as usize]; 2];
+        let mut x = x0.clone();
+        edge_fade(&mut x, sr);
+        let n = (EDGE_FADE_MS * 1e-3 * sr as f64) as usize;
+        for c in &x {
+            assert_eq!(c[0], 0.0, "first sample not silent");
+            assert!(c[c.len() - 1].abs() < 1e-3, "last sample {}", c[c.len() - 1]);
+            assert!(c[n..c.len() - n].iter().all(|v| *v == 0.5), "middle touched");
+            assert!(c[1..n].windows(2).all(|w| w[1] >= w[0]), "fade-in not monotonic");
+        }
     }
 }

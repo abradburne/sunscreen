@@ -155,9 +155,24 @@ Clean human masters were round-tripped through EnCodec 48 kHz (6, 12, 24 kbps; j
 - **The haze is not codec quantization noise**: neither codec adds denoiser-removable haze at any tested bitrate. Training pairs made with these codecs would teach width collapse and the wrong grid, not haze.
 - **Suno's codec is neither**: its grid is 240 samples at 48 kHz, a 200 Hz latent frame rate.
 
+### Blind sweep (12 Suno tracks vs 14 human masters)
+
+After the buzz turned up in a place the earlier searches never looked, a sweep compared generic statistics instead of testing guesses: 12 Suno tracks (6 MP3, 6 WAV, three albums plus loose tracks) against 14 commercial masters.
+
+| Check | Suno | Human masters | Verdict |
+|---|---|---|---|
+| Waveform repeat at any period 2-2400 samples (plus common frame sizes to 9600) | 11 of 12: every top period divides 240 (5, 6, 30, 60, 120, 240...), +13 to +23 dB | +6 to +12 dB, all musical notes | Only the 200 Hz decoder grid; debuzz covers it |
+| Steady spectral lines | Musical notes, plus lines at 200 Hz multiples (the buzz) | Musical notes; two have 50 Hz mains hum | Nothing new |
+| Cyclic (rhythmic) components to 5 kHz in the >2 kHz band | Musical only | Musical only | Nothing |
+| **Start and end** | First sample up to -13.7 dBFS; last 100 ms up to -20 dBFS (stops mid-sound) | Digital silence at both ends, 50-760 ms lead-in | **Clicks**: fixed with 5 ms edge fades |
+| Bass width, 20-250 Hz | correlation 0.87-0.998 below 60 Hz | 0.34-1.0 | Same range |
+| Crest factor | 12-15 dB | 10-11.6 dB | Suno is less compressed; `--master` covers loudness |
+| DC, sub-20 Hz, L/R timing, polarity | normal | normal | Nothing |
+
 ## Open ideas
 
 - A small neural restoration model. The codec check above shows EnCodec and DAC don't reproduce Suno's haze, so training pairs need a different simulator, or self-supervision on Suno files themselves.
+- Abrupt endings: some tracks stop mid-phrase. The edge fade removes the click; a longer optional fade-out would smooth the ending itself.
 - The second grid artifact: the high band's power ripples 3 to 3.7 dB over each 240-sample cycle, with a frequency-dependent phase (likely spectral imaging from the decoder's upsampler). Debuzz doesn't touch it; removing it needs cyclic (frequency-shift) filtering.
 - Stems mode: each stem has real noise-only gaps, so the floor could be measured instead of estimated. The first step would be comparing a stem-gap floor with the rolling floor.
 

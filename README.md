@@ -84,7 +84,7 @@ Each run always writes:
 
 | File | What it is |
 |---|---|
-| `<title> - Clean.wav` | The denoised track |
+| `<title> - Clean.wav` | The denoised track. Every output file also gets a 5 ms fade at each end: Suno files often start or stop mid-sound, which clicks on play and stop. |
 | `<title> - Removed Noise.wav` | Original minus Clean, sample for sample. Listen to it to hear what was taken. If you hear drums or vocals in it, the denoise is taking music. |
 | `<title> - Spectrogram.png` | The densest 10 s: original, removed, and (with `--excite`) the `--excite` output (before `--match`), each panel normalised separately |
 | `<title> - Report.txt` | The run report printed in the terminal, saved for later |
@@ -255,7 +255,7 @@ Beyond the flags, the knobs are constants near the top of `src/main.rs` (rebuild
 ## Development
 
 ```sh
-cargo test --release    # 13 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
+cargo test --release    # 14 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
 cargo build --release   # binary at target/release/sunscreen
 ```
 
