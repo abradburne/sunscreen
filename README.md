@@ -186,3 +186,7 @@ cargo build --release   # binary at target/release/sunscreen
 ```
 
 Everything is in `src/main.rs`. Dependencies are `hound` (WAV writing), `symphonia` (MP3/WAV decoding), `realfft` and `png`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

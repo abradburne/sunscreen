@@ -37,7 +37,7 @@ jobs:
         run: |
           name="sunscreen-$TAG-${{ matrix.target }}"
           mkdir "$name"
-          cp README.md "$name/"
+          cp README.md LICENSE "$name/"
           if [[ "${{ runner.os }}" == Windows ]]; then
             cp target/${{ matrix.target }}/release/sunscreen.exe "$name/"
             7z a "$name.zip" "$name" && file="$name.zip"
@@ -67,6 +67,7 @@ jobs:
             desc "Protection from Suno haze: cleans up tracks downloaded from Suno"
             homepage "https://github.com/$GITHUB_REPOSITORY"
             version "${TAG#v}"
+            license "MIT"
 
             on_macos do
               on_arm do
