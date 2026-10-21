@@ -6,8 +6,9 @@ Everything lives in `src/main.rs`. Names in `code font` (`FLOOR_KNOTS`, `noise_f
 
 ## Overview
 
-sunscreen cleans tracks rendered by Suno. It does five separate jobs:
+sunscreen cleans tracks rendered by Suno. It does six separate jobs:
 
+0. **Debuzz**: subtract the faint buzz Suno's decoder leaves on a fixed 240-sample grid (automatic, only when detected).
 1. **Denoise** a broadband "haze" that sits under the music and is strongest in the highs. The haze level follows the music, so the noise floor is estimated as a rolling percentile rather than from a fixed profile. A hearing model (the gate) then limits the cut to haze you could actually hear.
 2. **Smooth** the haze so it stops fluttering (optional, `--smooth`).
 3. **Widen** the stereo image above 10 kHz, where Suno output collapses toward mono (optional, `--widen`).
@@ -23,6 +24,9 @@ All processing is done in the short-time Fourier transform (STFT) domain with th
       |
       v
  read_audio ......... symphonia decode, gapless, f64 per channel
+      |
+      v
+ debuzz ............. auto (240-sample decoder grid)   debuzz.md
       |
       v
  STFT (Hann, n/hop = 4) ........ stft.md
@@ -58,13 +62,14 @@ All processing is done in the short-time Fourier transform (STFT) domain with th
  24-bit WAV (write_wav24), one cumulative file per enabled stage
 ```
 
-The order is fixed: denoise, smooth, widen, excite, match, master. Each optional stage takes the previous stage's output (`stage` in `main`), and each writes its own file (`Clean+smooth`, `Clean+smooth+widen`, ...), so you can audition one step at a time.
+The order is fixed: debuzz, denoise, smooth, widen, excite, match, master. Each optional stage takes the previous stage's output (`stage` in `main`), and each writes its own file (`Clean+smooth`, `Clean+smooth+widen`, ...), so you can audition one step at a time.
 
 ## Pages
 
 | Page | Contents |
 |---|---|
 | [stft.md](stft.md) | The transform every stage shares: window, size scaling with sample rate, padding, weighted overlap-add, exact round trip, linked stereo, phase |
+| [debuzz.md](debuzz.md) | Suno's decoder grid: how it was found, detection, subtraction, what it costs |
 | [denoise.md](denoise.md) | Rolling noise floor, power subtraction, frequency-dependent alpha, per-region maximum cut, mask blur, drum-hit protection, why the floor is rolling |
 | [gate.md](gate.md) | The hearing-model gate: Bark bands, spreading, tonality offset, noise-to-mask ratio, dilate-blur-apply ordering |
 | [smooth.md](smooth.md) | `--smooth`: pulling haze toward its own moving average |

@@ -1,6 +1,6 @@
 //! Adaptive spectral denoise for Suno renders: rolling-percentile noise floor,
 //! linked-stereo power-subtraction mask, original phase kept.
-//! Usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]] [--master[=LUFS]]
+//! Usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--no-debuzz] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]] [--master[=LUFS]]
 
 use realfft::RealFftPlanner;
 use realfft::num_complex::Complex;
@@ -85,6 +85,14 @@ const TRUE_PEAK_DBTP: f64 = -1.0;
 const LIMIT_ATTACK_MS: f64 = 2.0;
 const LIMIT_RELEASE_MS: f64 = 80.0;
 const TP_HALF_TAPS: usize = 6; // 12 taps per phase, as in BS.1770's reference 48-tap 4x filter
+
+// debuzz: Suno's decoder repeats a fixed waveform DEBUZZ_HZ times a second (every
+// 240 samples at 48 kHz). Counts as present when its synchronous average stands
+// DEBUZZ_MIN_DB above chance (Suno 15-29 dB, human masters ~0); it is estimated
+// over DEBUZZ_WINDOW_S windows so its slowly drifting level is tracked.
+const DEBUZZ_HZ: u32 = 200;
+const DEBUZZ_MIN_DB: f64 = 6.0;
+const DEBUZZ_WINDOW_S: f64 = 4.0;
 
 const TONE_HZ: [f64; 10] = [63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 3000.0, 4000.0, 8000.0, 12000.0];
 const BANDS: [(f64, f64); 5] = [(0.0, 350.0), (350.0, 3500.0), (3500.0, 7000.0), (7000.0, 12000.0), (12000.0, f64::MAX)];
@@ -1058,6 +1066,74 @@ fn master(x: &[Vec<f64>], sr: u32, target: f64) -> (Vec<Vec<f64>>, Master) {
     last.unwrap()
 }
 
+/// `sig` band-limited to [lo, hi) Hz by zeroing bins of one full-length FFT.
+fn band_pass(sig: &[f64], sr: u32, lo: f64, hi: f64) -> Vec<f64> {
+    let n = sig.len().next_power_of_two();
+    let mut planner = RealFftPlanner::<f64>::new();
+    let (fwd, inv) = (planner.plan_fft_forward(n), planner.plan_fft_inverse(n));
+    let mut buf: Vec<f64> = sig.iter().copied().chain(std::iter::repeat(0.0)).take(n).collect();
+    let mut spec = fwd.make_output_vec();
+    fwd.process(&mut buf, &mut spec).unwrap();
+    for (k, c) in spec.iter_mut().enumerate() {
+        if !(lo..hi).contains(&(k as f64 * sr as f64 / n as f64)) { *c = Complex::new(0.0, 0.0); }
+    }
+    if let Some(last) = spec.last_mut() { last.im = 0.0; }
+    let mut out = inv.make_output_vec();
+    inv.process(&mut spec, &mut out).unwrap();
+    out.truncate(sig.len());
+    out.iter_mut().for_each(|v| *v /= n as f64);
+    out
+}
+
+/// Sample period of the decoder grid, when DEBUZZ_HZ divides the rate evenly.
+fn grid_period(sr: u32) -> Option<usize> {
+    (sr % DEBUZZ_HZ == 0).then(|| (sr / DEBUZZ_HZ) as usize)
+}
+
+/// How far a waveform repeating every `per` samples stands above chance, in dB:
+/// energy of the synchronous average over the whole track vs the variance/k that
+/// random content would leave in it. Mono, above 1 kHz so bass doesn't drown it.
+fn grid_snr(x: &[Vec<f64>], sr: u32, per: usize) -> f64 {
+    let mono: Vec<f64> = (0..x[0].len()).map(|i| x.iter().map(|c| c[i]).sum::<f64>() / x.len() as f64).collect();
+    let hp = band_pass(&mono, sr, 1000.0, f64::MAX);
+    let k = hp.len() / per;
+    let (mut sum, mut sq) = (vec![0.0; per], vec![0.0; per]);
+    for (i, v) in hp[..k * per].iter().enumerate() { sum[i % per] += v; sq[i % per] += v * v; }
+    let mean_sq = sum.iter().map(|s| (s / k as f64).powi(2)).sum::<f64>() / per as f64;
+    let var = sum.iter().zip(&sq).map(|(s, q)| q / k as f64 - (s / k as f64).powi(2)).sum::<f64>() / per as f64;
+    10.0 * (mean_sq / (var / k as f64 + 1e-30)).log10()
+}
+
+/// Subtract a waveform that repeats every `per` samples. Per channel: synchronous
+/// averages over Hann windows of DEBUZZ_WINDOW_S at 50% overlap, overlap-added
+/// into a slowly varying template. In frequency terms, notches ~1/window wide at
+/// every multiple of the grid rate, so the music around them is untouched.
+/// Windows holding fewer than 50 periods (file edges) are skipped as too noisy.
+fn debuzz(x: &[Vec<f64>], sr: u32, per: usize) -> Vec<Vec<f64>> {
+    let len = x[0].len();
+    let w_len = ((DEBUZZ_WINDOW_S * sr as f64) as usize / per * per).max(per);
+    let hop = w_len / 2;
+    let win = hann(w_len);
+    x.iter().map(|c| {
+        let (mut tmpl, mut norm) = (vec![0.0; len], vec![0.0; len]);
+        let mut s = -(hop as isize);
+        while s < len as isize {
+            let (a, b) = (s.max(0) as usize, ((s + w_len as isize) as usize).min(len));
+            if b - a >= 50 * per {
+                let (mut num, mut den) = (vec![0.0; per], vec![0.0; per]);
+                for i in a..b { let w = win[(i as isize - s) as usize]; num[i % per] += c[i] * w; den[i % per] += w; }
+                for i in a..b {
+                    let w = win[(i as isize - s) as usize];
+                    tmpl[i] += num[i % per] / den[i % per] * w;
+                    norm[i] += w;
+                }
+            }
+            s += hop as isize;
+        }
+        c.iter().zip(tmpl.iter().zip(&norm)).map(|(v, (t, n))| if *n > 1e-9 { v - t / n } else { *v }).collect()
+    }).collect()
+}
+
 fn denoise(p: &Params, x: &[Vec<f64>], sr: u32) -> (Vec<Vec<f64>>, Vec<f32>, Stft) {
     let st = Stft::new(p.n, p.hop, x[0].len());
     let (frames, bins) = (st.frames, st.bins());
@@ -1112,7 +1188,7 @@ fn denoise(p: &Params, x: &[Vec<f64>], sr: u32) -> (Vec<Vec<f64>>, Vec<f32>, Stf
 
 fn main() {
     let (flags, args): (Vec<String>, Vec<String>) = std::env::args().partition(|a| a.starts_with("--"));
-    if args.len() < 2 { eprintln!("usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]] [--master[=LUFS]]"); std::process::exit(2); }
+    if args.len() < 2 { eprintln!("usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--no-debuzz] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]] [--master[=LUFS]]"); std::process::exit(2); }
     // --excite alone = default level; --excite=-6 = 6 dB under the extrapolated slope
     // --smooth alone = default window; --smooth=150 = 150 ms
     let smooth_ms = flags.iter().find_map(|f| f.strip_prefix("--smooth"))
@@ -1248,7 +1324,24 @@ fn main() {
     let rt_err = rt.iter().zip(&x[0]).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
     say!("stft rt    max |err| = {rt_err:.3e}");
 
-    let (clean, gain, st) = denoise(&p, &x, sr);
+    // remove the decoder buzz first, so it lands in Removed Noise and never
+    // reaches the floor estimate as a set of steady "noise" lines
+    let xin = match grid_period(sr).filter(|_| !flags.iter().any(|f| f == "--no-debuzz")) {
+        None => { say!("debuzz     off ({})", if grid_period(sr).is_none() { format!("no {DEBUZZ_HZ} Hz grid at {sr} Hz") } else { "--no-debuzz".into() }); None }
+        Some(per) => {
+            let snr = grid_snr(&x, sr, per);
+            if snr < DEBUZZ_MIN_DB {
+                say!("debuzz     no decoder grid ({snr:+.1} dB vs chance at {per} samples)");
+                None
+            } else {
+                let y = debuzz(&x, sr, per);
+                let buzz: Vec<Vec<f64>> = x.iter().zip(&y).map(|(a, b)| a.iter().zip(b).map(|(u, v)| u - v).collect()).collect();
+                say!("debuzz     Suno decoder grid: {per}-sample repeat {snr:+.1} dB above chance | removed {:.1} dBFS rms", 20.0 * rms(&buzz).log10());
+                Some(y)
+            }
+        }
+    };
+    let (clean, gain, st) = denoise(&p, xin.as_ref().unwrap_or(&x), sr);
     let removed: Vec<Vec<f64>> = x.iter().zip(&clean).map(|(o, c)| o.iter().zip(c).map(|(a, b)| a - b).collect()).collect();
 
     let clean_path = out_dir.join(format!("{title} - Clean.wav"));
@@ -1575,5 +1668,26 @@ mod tests {
         assert!((lufs(&out, sr) + 14.0).abs() < 0.1, "loudness {}", info.out_lufs);
         assert!(tp <= TRUE_PEAK_DBTP + 0.01, "true peak {tp} dBTP");
         assert!(info.max_gr_db > 1.0, "the hits should have needed limiting");
+    }
+
+    #[test]
+    fn debuzz_removes_decoder_grid() {
+        let sr = 48000u32;
+        let per = grid_period(sr).unwrap();
+        let n = 20 * sr as usize;
+        let mut seed = 13u64;
+        let mut rnd = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1); (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5 };
+        let noise: Vec<Vec<f64>> = (0..2).map(|_| (0..n).map(|_| 0.2 * rnd()).collect()).collect();
+        // a fixed 240-sample waveform ~26 dB under the noise, as Suno's decoder leaves
+        let pattern: Vec<f64> = (0..per).map(|_| 0.02 * rnd()).collect();
+        let x: Vec<Vec<f64>> = noise.iter().map(|c| c.iter().enumerate().map(|(i, v)| v + pattern[i % per]).collect()).collect();
+        assert!(grid_snr(&noise, sr, per) < DEBUZZ_MIN_DB, "plain noise flagged");
+        assert!(grid_snr(&x, sr, per) > 15.0, "grid missed: {}", grid_snr(&x, sr, per));
+        let y = debuzz(&x, sr, per);
+        assert!(grid_snr(&y, sr, per) < 3.0, "grid left: {}", grid_snr(&y, sr, per));
+        // what came out is the pattern, not the noise: the residual against the clean
+        // noise is only what falls in the notches, ~28 dB under it (the pattern is -26 dB)
+        let err: Vec<Vec<f64>> = y.iter().zip(&noise).map(|(a, b)| a.iter().zip(b).map(|(u, v)| u - v).collect()).collect();
+        assert!(rms(&err) < 0.06 * rms(&noise), "residual {} vs noise {}", rms(&err), rms(&noise));
     }
 }

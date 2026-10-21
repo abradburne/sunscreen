@@ -105,11 +105,11 @@ Suno is not consistently smeared: two tracks are 2 to 3 ms slower than the human
 
 Idea: haze is concentrated in the side signal. On three tracks, mid and side haze reduction differed by at most about 0.1 dB in every band. It is not, so the mask stays linked across channels.
 
-### Codec frame-rate fingerprint (`--modspec`)
+### Codec frame-rate fingerprint (`--modspec`): first verdict wrong, see [debuzz.md](debuzz.md)
 
 Idea: if Suno decodes from a neural codec at a fixed frame rate (EnCodec 75 Hz, DAC 86 Hz, many at 50 Hz), haze flutter at that rate would show as a sharp peak in the modulation spectrum, and a modulation notch could cut haze with little collateral damage. Control: 10 percent flutter at 75 Hz in noise reads above 10 dB, steady noise below 4 dB (and mutation-checked).
 
-Result: every peak in each Suno track is a multiple of that track's own tempo grid (a sixteenth-note grid: 6.6, 3.5, 4.25 and 4.17 Hz on four tracks), none is shared across tracks, and the candidate codec rates sit at the same prominence as a human-made AAC reference (at or below about 5 dB; one track reads 5.8 to 6.6 dB at 50 Hz, which is the twelfth multiple of its own 4.17 Hz grid). Suno's decoder leaves no frame-rate flutter, as a smooth overlap-add decoder wouldn't. The follow-up idea (align the STFT hop to the codec hop) falls with it.
+Result: every peak in each Suno track is a multiple of that track's own tempo grid (a sixteenth-note grid: 6.6, 3.5, 4.25 and 4.17 Hz on four tracks), none is shared across tracks, and the candidate codec rates sit at the same prominence as a human-made AAC reference (at or below about 5 dB; one track reads 5.8 to 6.6 dB at 50 Hz, which is the twelfth multiple of its own 4.17 Hz grid). This first verdict was wrong. The candidate list lacked 200 Hz, the search stopped at 400 Hz, and the 1 kHz envelope folded the grid's harmonics together. A wider search after the neural-codec check found Suno's decoder grid: a waveform repeating every 240 samples (200 Hz) in three of four tracks, now removed by the debuzz stage. See [debuzz.md](debuzz.md).
 
 ### Residual-only denoise
 
@@ -140,9 +140,25 @@ Haze flutter (3.5 to 7 k / 7 to 12 k) was 3.91 / 5.97 dB original and 4.07 / 5.9
 
 Idea: keep sinusoids, regenerate the stochastic part with clean noise of the same envelope. No measurement separates it from `--smooth` (both flatten the haze's level readings), and `--smooth` already passed listening. Revisit only if smoothing sounds watery at useful settings.
 
+### Neural codec round trips (EnCodec, DAC)
+
+Clean human masters were round-tripped through EnCodec 48 kHz (6, 12, 24 kbps; joint stereo) and DAC 44 kHz (per channel):
+
+| | 16 to 20 kHz coherence / side vs mid | Denoise removal 7 to 12 k | Periodic grid |
+|---|---|---|---|
+| Human original | 0.84 / -7.6 dB | -0.66 dB | none |
+| After EnCodec | 0.997 / -14.5 to -15.1 dB | -0.68 to -0.73 dB | 40 samples (1200 Hz), +12 to +15 dB |
+| After DAC | 0.32 / -2.2 dB (wider) | -0.81 to -0.85 dB | 512 samples, weak |
+| Suno | 0.97 to 0.999 / -16 to -30 dB | | 240 samples (200 Hz) |
+
+- **High-frequency width collapse is a joint-stereo codec trait.** EnCodec reproduces Suno's collapse exactly; per-channel DAC does the opposite. That supports `--widen`.
+- **The haze is not codec quantization noise**: neither codec adds denoiser-removable haze at any tested bitrate. Training pairs made with these codecs would teach width collapse and the wrong grid, not haze.
+- **Suno's codec is neither**: its grid is 240 samples at 48 kHz, a 200 Hz latent frame rate.
+
 ## Open ideas
 
-- A small neural restoration model trained on pairs made with an open neural codec (DAC, EnCodec, SNAC) at low bit rate. The checks listed first are whether those codecs reproduce Suno's haze at all, and where lossless training music would come from.
+- A small neural restoration model. The codec check above shows EnCodec and DAC don't reproduce Suno's haze, so training pairs need a different simulator, or self-supervision on Suno files themselves.
+- The second grid artifact: the high band's power ripples 3 to 3.7 dB over each 240-sample cycle, with a frequency-dependent phase (likely spectral imaging from the decoder's upsampler). Debuzz doesn't touch it; removing it needs cyclic (frequency-shift) filtering.
 - Stems mode: each stem has real noise-only gaps, so the floor could be measured instead of estimated. The first step would be comparing a stem-gap floor with the rolling floor.
 
 ## Floor timing (open question)

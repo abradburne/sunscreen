@@ -8,14 +8,15 @@ Cleans up tracks downloaded from Suno. It's a single Rust binary (or a drag-and-
 
 Suno songs share a few audible flaws. sunscreen fixes each one in a separate, gentle step, and writes a file after every step so you can hear exactly what each one did:
 
-1. **Removes the haze.** Suno renders sit on a grainy static, like a radio slightly off-station, strongest in the highs. sunscreen tracks how loud that static is moment by moment (it rises and falls with the music) and turns it down where you'd actually hear it. It leaves alone the static the music already covers, and steps aside on drum hits so they keep their snap.
-2. **Steadies what's left** (`--smooth`). The static doesn't just sit there; it flutters. Evening out the flutter removes most of the "off-station" character without cutting any more.
-3. **Widens the top end** (`--widen`). Suno's highs collapse to near-mono. sunscreen gives the cymbals and air back the same width the rest of the track already has. The mono fold-down is unchanged.
-4. **Rebuilds the missing top octave** (`--excite`). Suno's MP3s stop dead at about 18 kHz. sunscreen fills that region from the music just below it, the way HE-AAC does.
-5. **Balances the tone like a commercial master** (`--match`). Each Suno track comes out with its own tilt (one boomy, one harsh). sunscreen compares it with the average of 12 commercially mastered pop songs and corrects it gently (±3 dB at most, without changing loudness). Or give it a song you love: `--match=ref.wav`.
-6. **Masters the level** (`--master`). Suno tracks arrive anywhere from −11.6 to −15.6 LUFS. sunscreen sets them all to the streaming standard (−14 LUFS) with a true-peak limiter at −1 dBTP, so an album plays at an even level and survives Spotify's re-encoding without clipping.
+1. **Removes the decoder buzz** (automatic). Suno's decoder leaves a faint, steady buzz that repeats exactly every 5 ms. sunscreen detects it and subtracts it precisely, leaving the music around it untouched. It only acts when it finds the buzz; `--no-debuzz` turns it off.
+2. **Removes the haze.** Suno renders sit on a grainy static, like a radio slightly off-station, strongest in the highs. sunscreen tracks how loud that static is moment by moment (it rises and falls with the music) and turns it down where you'd actually hear it. It leaves alone the static the music already covers, and steps aside on drum hits so they keep their snap.
+3. **Steadies what's left** (`--smooth`). The static doesn't just sit there; it flutters. Evening out the flutter removes most of the "off-station" character without cutting any more.
+4. **Widens the top end** (`--widen`). Suno's highs collapse to near-mono. sunscreen gives the cymbals and air back the same width the rest of the track already has. The mono fold-down is unchanged.
+5. **Rebuilds the missing top octave** (`--excite`). Suno's MP3s stop dead at about 18 kHz. sunscreen fills that region from the music just below it, the way HE-AAC does.
+6. **Balances the tone like a commercial master** (`--match`). Each Suno track comes out with its own tilt (one boomy, one harsh). sunscreen compares it with the average of 12 commercially mastered pop songs and corrects it gently (±3 dB at most, without changing loudness). Or give it a song you love: `--match=ref.wav`.
+7. **Masters the level** (`--master`). Suno tracks arrive anywhere from −11.6 to −15.6 LUFS. sunscreen sets them all to the streaming standard (−14 LUFS) with a true-peak limiter at −1 dBTP, so an album plays at an even level and survives Spotify's re-encoding without clipping.
 
-Every step exists because a measurement on real Suno tracks showed the problem. Ideas that measured as non-problems (spectral holes, phase smear, soft attacks, repeat averaging, a codec frame-rate fingerprint) were dropped. [docs/](docs/README.md) explains exactly how every step works, and [docs/findings.md](docs/findings.md) has the measurements.
+Every step exists because a measurement on real Suno tracks showed the problem. Ideas that measured as non-problems (spectral holes, phase smear, soft attacks, repeat averaging) were dropped. [docs/](docs/README.md) explains exactly how every step works, and [docs/findings.md](docs/findings.md) has the measurements.
 
 ## Hear it
 
@@ -66,7 +67,7 @@ for f in *.mp3; do sunscreen "$f" cleaned "${f%.mp3}" --smooth --widen --excite 
 ## Usage
 
 ```
-sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]] [--master[=LUFS]]
+sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--no-debuzz] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]] [--master[=LUFS]]
 ```
 
 | Argument | Default | Meaning |
@@ -99,6 +100,14 @@ The stages always run in that order. A file name lists only the stages you turne
 The run also prints a report: the parameters used, the STFT round-trip error (should be about 1e-16), peak levels, RMS change, attenuation per band, and how much the removed signal follows the music (`env corr`).
 
 ## What each stage does, and why
+
+### Debuzz (automatic) — remove the decoder's buzz
+
+**Problem:** Suno's decoder works on a 5 ms grid (240 samples at 48 kHz) and leaves a waveform that repeats exactly on it for the whole song: a faint buzz at 200 Hz and its harmonics, about 20 dB under the music's high end. Found in 3 of 4 Suno tracks and in none of the human masters tested.
+
+**How:** measures how far a 240-sample repeat stands above chance (Suno: +21 to +23 dB; human masters: about −1 to −2 dB). Above 6 dB it estimates the repeating waveform over sliding 4-second windows and subtracts it. That amounts to notches only a quarter hertz wide at each multiple of 200 Hz.
+
+**Measured:** removes −42 to −48 dBFS of buzz; afterwards no repeat remains. Nothing else in the chain changes, and drum hits are untouched. Details, and how it was found, in [docs/debuzz.md](docs/debuzz.md).
 
 ### Denoise (always on)
 
@@ -246,7 +255,7 @@ Beyond the flags, the knobs are constants near the top of `src/main.rs` (rebuild
 ## Development
 
 ```sh
-cargo test --release    # 12 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
+cargo test --release    # 13 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
 cargo build --release   # binary at target/release/sunscreen
 ```
 
