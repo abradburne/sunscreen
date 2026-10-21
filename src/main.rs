@@ -356,7 +356,7 @@ fn onsets(power: &[f32], frames: usize, bins: usize, hz_per_bin: f64) -> Vec<usi
     let flux: Vec<f64> = (0..frames).map(|t| if t == 0 { 0.0 } else {
         (lo..bins).map(|f| (lp(t, f) - lp(t - 1, f)).max(0.0)).sum::<f64>() / (bins - lo) as f64
     }).collect();
-    let r = 12; // ~0.25 s each side at 48k/512
+    let r = 12; // ~128 ms each side at 48k/512
     let mut win = Vec::with_capacity(2 * r + 1);
     (1..frames.saturating_sub(1)).filter(|&t| {
         win.clear();
@@ -647,7 +647,7 @@ fn repeats(p: &Params, x: &[Vec<f64>], sr: u32) -> (Vec<f64>, Vec<f64>) {
 const WIDTH_BANDS: [(f64, f64); 8] = [(0.0, 350.0), (350.0, 1000.0), (1000.0, 3500.0), (3500.0, 7000.0), (7000.0, 10000.0), (10000.0, 13000.0), (13000.0, 16000.0), (16000.0, 20000.0)];
 
 /// Per WIDTH_BANDS: (energy-weighted L/R coherence, side/mid energy in dB).
-/// Coherence is taken per frame across ~1/6-octave sub-bands, so a band that was
+/// Coherence is taken per frame across ~1/7-octave sub-bands, so a band that was
 /// coded as one signal panned L/R (intensity stereo) reads exactly 1.
 fn width(p: &Params, x: &[Vec<f64>], sr: u32) -> Vec<(f64, f64)> {
     let st = Stft::new(p.n, p.hop, x[0].len());
@@ -838,7 +838,6 @@ fn audibility(p: &Params, x: &[Vec<f64>], sr: u32) -> [f64; 3] {
     acc
 }
 
-/// Core DSP. Returns (clean, gain mask [frames][bins], stft geometry).
 /// Modulation spectrum of each high band's log-power envelope (~1 kHz envelope
 /// rate, 4 s Welch segments, 0.25 Hz resolution). A codec running at a fixed
 /// frame rate leaves a sharp peak at that rate; music modulates at beat and
@@ -922,6 +921,7 @@ fn third_octaves(lt: &[f64], sr: u32, n: usize) -> Vec<(f64, f64)> {
     v
 }
 
+/// Core DSP. Returns (clean, gain mask [frames][bins], stft geometry).
 fn denoise(p: &Params, x: &[Vec<f64>], sr: u32) -> (Vec<Vec<f64>>, Vec<f32>, Stft) {
     let st = Stft::new(p.n, p.hop, x[0].len());
     let (frames, bins) = (st.frames, st.bins());

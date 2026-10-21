@@ -2,9 +2,31 @@
 
 *Protection from Suno haze.*
 
-Cleans up tracks downloaded from Suno. It reduces the broadband "haze" (static that sounds like an off-station radio), restores width in the high frequencies, and rebuilds the top end that the MP3 cut off. It's a single Rust binary that reads MP3 or WAV and writes 24-bit WAV.
+Cleans up tracks downloaded from Suno. It's a single Rust binary (or a drag-and-drop Mac app) that reads MP3 or WAV and writes 24-bit WAV.
 
-Every stage is there because a measurement on real Suno tracks showed the problem exists. Ideas that measured as non-problems (spectral holes, phase smear, soft attacks, repeat averaging) were dropped.
+## What it does
+
+Suno songs share a few audible flaws. sunscreen fixes each one in a separate, gentle step, and writes a file after every step so you can hear exactly what each one did:
+
+1. **Removes the haze.** Suno renders sit on a grainy static, like a radio slightly off-station, strongest in the highs. sunscreen tracks how loud that static is moment by moment (it rises and falls with the music) and turns it down where you'd actually hear it. It leaves alone the static the music already covers, and steps aside on drum hits so they keep their snap.
+2. **Steadies what's left** (`--smooth`). The static doesn't just sit there; it flutters. Evening out the flutter removes most of the "off-station" character without cutting any more.
+3. **Widens the top end** (`--widen`). Suno's highs collapse to near-mono. sunscreen gives the cymbals and air back the same width the rest of the track already has. The mono fold-down is unchanged.
+4. **Rebuilds the missing top octave** (`--excite`). Suno's MP3s stop dead at about 18 kHz. sunscreen fills that region from the music just below it, the way HE-AAC does.
+5. **Balances the tone like a commercial master** (`--match`). Each Suno track comes out with its own tilt (one boomy, one harsh). sunscreen compares it with the average of 12 commercially mastered pop songs and corrects it gently (±3 dB at most, without changing loudness). Or give it a song you love: `--match=ref.wav`.
+
+Every step exists because a measurement on real Suno tracks showed the problem. Ideas that measured as non-problems (spectral holes, phase smear, soft attacks, repeat averaging, a codec frame-rate fingerprint) were dropped. [docs/](docs/README.md) explains exactly how every step works, and [docs/findings.md](docs/findings.md) has the measurements.
+
+## Hear it
+
+30 seconds of *Glass Hearts & Gasoline* (a Suno track), full chain `--smooth --widen --excite --match` (16-bit FLAC; the links download):
+
+- [Before](https://github.com/abradburne/sunscreen/releases/download/v0.4.0/glass-hearts-30s-before.flac): the Suno MP3, untouched
+- [After](https://github.com/abradburne/sunscreen/releases/download/v0.4.0/glass-hearts-30s-after.flac): sunscreen's output
+- [Removed](https://github.com/abradburne/sunscreen/releases/download/v0.4.0/glass-hearts-30s-removed.flac): what the denoiser took out (it should sound like hiss, not music)
+
+![Spectrograms: before, after, removed](docs/img/before-after.jpg)
+
+*Top: before. The MP3 stops dead at 18 kHz. Middle: after. The top octave is rebuilt up to 22 kHz, and the tonal balance is matched. Bottom: what was removed. Broadband haze, with dark gaps where drum hits were protected, and almost nothing below 300 Hz.*
 
 ## Quick start
 
@@ -61,7 +83,7 @@ Each run always writes:
 |---|---|
 | `<title> - Clean.wav` | The denoised track |
 | `<title> - Removed Noise.wav` | Original minus Clean, sample for sample. Listen to it to hear what was taken. If you hear drums or vocals in it, the denoise is taking music. |
-| `<title> - Spectrogram.png` | The densest 10 s: original, removed, and (with `--excite`) the final result, each panel normalised separately |
+| `<title> - Spectrogram.png` | The densest 10 s: original, removed, and (with `--excite`) the `--excite` output (before `--match`), each panel normalised separately |
 | `<title> - Report.txt` | The run report printed in the terminal, saved for later |
 
 Each optional stage then writes a **cumulative** file, so you can A/B one step at a time:
@@ -104,7 +126,7 @@ The run also prints a report: the parameters used, the STFT round-trip error (sh
 
 **Problem:** the haze *flutters*, which is the "off-station radio" quality. Plain denoising makes it worse: power subtraction cuts the quiet dips harder than the peaks, which made the flutter 1–1.2 dB more pronounced on Glass Hearts.
 
-**How:** this is the same idea as AAC's noise substitution (in noise-like bands the ear hears level, not waveform). Wherever haze dominates a bin, its level is pulled toward its own short moving average. It keeps the original phase, uses one gain for both channels, caps changes at ±6 dB, and leaves frames ≥4× above the floor (music, hits) alone.
+**How:** this is the same idea as AAC's noise substitution (in noise-like bands the ear hears level, not waveform). Wherever haze dominates a bin, its level is pulled toward its own short moving average. It keeps the original phase, uses one gain for both channels, caps changes at ±6 dB, and fades the effect out as a bin rises above the floor, leaving bins ≥4× above it (music, hits) alone. The floor is re-measured on the denoised audio.
 
 **Measured:** flutter in the 3.5–12 kHz haze goes from 6.97/8.60 dB (Clean) to 5.19/6.45 dB, below the original. Overall level changes by +0.1 dB.
 
@@ -114,7 +136,7 @@ The run also prints a report: the parameters used, the STFT round-trip error (sh
 
 **Problem:** every Suno track tested collapses toward mono at the top. Above 16 kHz, left and right are 0.97–0.999 identical, while the mids are clearly wider. The WAV downloads do it too, so it comes from Suno's generator, not the MP3 export.
 
-**How:** above 10 kHz (ramped in by 12 kHz), a 5 ms-delayed copy of the centre (mid) signal is added to the side signal. That's just enough to bring each band up to the track's *own* width in 3.5–13 kHz, times `x`. Only the side changes, so **L+R (the mono fold-down) is bit-for-bit unchanged**.
+**How:** above 10 kHz (ramped in by 12 kHz), a 5 ms-delayed copy of the centre (mid) signal is added to the side signal. That's just enough to bring each band up to the track's *own* width in 3.5–13 kHz, times `x`. Only the side changes, so **L+R (the mono fold-down) is unchanged** (to floating-point rounding).
 
 **Measured (Glass Hearts):** above 16 kHz, side relative to mid goes from −18.0 to −8.6 dB (target −7.9). Nothing below 10 kHz changes.
 
@@ -126,7 +148,7 @@ The run also prints a report: the parameters used, the STFT round-trip error (sh
 
 **How:** spectral band replication, the trick HE-AAC uses:
 - **Find the cutoff:** where the long-term spectrum falls 25 dB below the 8–12 kHz level.
-- **Copy:** the band at about 9–14 kHz is copied up into the empty region, frame by frame, so the new highs follow the music's hits.
+- **Copy:** the band just below the cutoff (ending at 0.8× the cutoff, so about 9–14 kHz for an 18 kHz cutoff) is copied up into the empty region, frame by frame, so the new highs follow the music's hits.
 - **Level:** the added content continues the track's own fitted high-frequency slope, plus the `dB` offset. Only the power that's *missing* is added, so real content isn't doubled.
 - **Phase:** the shift is a multiple of 4 bins, which keeps the copied partials phase-coherent from frame to frame.
 
@@ -143,7 +165,7 @@ If no cutoff is found, the stage is skipped.
 **How:** compares the track's long-term spectrum with a target and applies the difference as a static EQ:
 - **Target:** with plain `--match`, the built-in average of those 12 masters (they agree within 1–2.7 dB from 125 Hz to 10 kHz). With `--match=song.wav`, that one track instead.
 - **Smooth and gentle:** the correction is averaged over one octave, so it shapes tone rather than notching notes, and capped at ±3 dB.
-- **Level-neutral:** the overall RMS doesn't change; it only rebalances.
+- **Level-neutral:** the average correction (weighted by the track's own energy) is removed, so overall level stays about the same; it rebalances rather than boosts.
 - **Range:** 40 Hz to 12 kHz, fading out beyond. Above 12 kHz the references disagree too much to be a target, and the exciter owns that region anyway.
 
 The run prints the applied correction at 63 Hz to 16 kHz.
@@ -173,7 +195,7 @@ Each one prints a measurement and exits without writing audio. They're how every
 | `--phase` | Phase coherence around tonal peaks | Spot "phasey" sustained notes |
 | `--modspec` | How the haze level fluctuates (modulation spectrum), with readings at neural-codec and MP3/AAC frame rates | Look for a codec fingerprint (none found on Suno) |
 | `--floors` | Noise floor against music level, loud to quiet | Check whether haze is a fixed floor or follows the music (on Suno: follows it) |
-| `--tone=ref.wav` | The uncapped `--match` correction (`--tone=pop` for the built-in target) | See how a track's balance differs from a reference without rendering |
+| `--tone=ref.wav` | The `--match` correction without the ±3 dB cap (`--tone=pop` for the built-in target) | See how a track's balance differs from a reference without rendering |
 | `--profile` | Third-octave long-term spectrum | Build your own target from tracks you like |
 | `--repeats` | How similar repeated sections are, and whether their waveforms line up | Explains why repeat-averaging can't work on Suno |
 
@@ -206,7 +228,7 @@ Beyond the flags, the knobs are constants near the top of `src/main.rs` (rebuild
 ## Development
 
 ```sh
-cargo test --release    # 7 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
+cargo test --release    # 9 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
 cargo build --release   # binary at target/release/sunscreen
 ```
 
