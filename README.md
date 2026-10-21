@@ -23,6 +23,7 @@ Every step exists because a measurement on real Suno tracks showed the problem. 
 
 - [Before](https://github.com/abradburne/sunscreen/releases/download/v0.4.0/glass-hearts-30s-before.flac): the Suno MP3, untouched
 - [After](https://github.com/abradburne/sunscreen/releases/download/v0.4.0/glass-hearts-30s-after.flac): sunscreen's output
+- [After + mastering](https://github.com/abradburne/sunscreen/releases/download/v0.5.0/glass-hearts-30s-after-mastered.flac): the same chain plus `--master=-9`, loud like a commercial single (−9 LUFS, −1 dBTP)
 - [Removed](https://github.com/abradburne/sunscreen/releases/download/v0.4.0/glass-hearts-30s-removed.flac): what the denoiser took out (it should sound like hiss, not music)
 
 ![Spectrograms: before, after, removed](docs/img/before-after.jpg)
