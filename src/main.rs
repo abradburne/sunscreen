@@ -6,6 +6,11 @@ use realfft::RealFftPlanner;
 use realfft::num_complex::Complex;
 use std::f64::consts::PI;
 use std::path::Path;
+use std::sync::Mutex;
+
+// Every report line of a run, written to "<title> - Report.txt" at the end.
+static REPORT: Mutex<String> = Mutex::new(String::new());
+macro_rules! say { ($($t:tt)*) => {{ let s = format!($($t)*); println!("{s}"); REPORT.lock().unwrap().push_str(&s); REPORT.lock().unwrap().push('\n'); }} }
 
 struct Params {
     n: usize,
@@ -874,13 +879,13 @@ fn main() {
     let (x, sr) = read_audio(input);
     let len = x[0].len();
     let p = Params { gate: !flags.iter().any(|f| f == "--no-gate"), ..params_for(sr) };
-    println!("input      {} | {} Hz, {} ch, {} samples ({:.1} s)", input.display(), sr, x.len(), len, len as f64 / sr as f64);
-    println!("params     n_fft={} hop={} hann | block={}s p{} x{} | alpha {}->{} over {}-{} Hz | blur {}bin x {}fr",
+    say!("input      {} | {} Hz, {} ch, {} samples ({:.1} s)", input.display(), sr, x.len(), len, len as f64 / sr as f64);
+    say!("params     n_fft={} hop={} hann | block={}s p{} x{} | alpha {}->{} over {}-{} Hz | blur {}bin x {}fr",
         p.n, p.hop, p.block_s, (p.pctl * 100.0) as u32, p.noise_scale, p.alpha_lo, p.alpha_hi, ALPHA_RAMP.0, ALPHA_RAMP.1, p.sigma_f, p.sigma_t);
-    println!("floors     {:?} (Hz, dB max atten)", FLOOR_KNOTS);
+    say!("floors     {:?} (Hz, dB max atten)", FLOOR_KNOTS);
 
     if flags.iter().any(|f| f == "--flutter") {
-        let show = |name: &str, r: Vec<(f64, usize)>| println!("flutter {name:<6} {}", r.iter().zip(BANDS).map(|((v, n), (lo, _))| format!("{:>5.0}+ {v:4.2} dB ({n})", lo)).collect::<Vec<_>>().join(" | "));
+        let show = |name: &str, r: Vec<(f64, usize)>| say!("flutter {name:<6} {}", r.iter().zip(BANDS).map(|((v, n), (lo, _))| format!("{:>5.0}+ {v:4.2} dB ({n})", lo)).collect::<Vec<_>>().join(" | "));
         show("track", flutter(&p, &x, sr));
         let mut seed = 42u64;
         let mut rnd = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1); (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5 };
@@ -893,23 +898,23 @@ fn main() {
         let gated = audibility(&Params { gate: true, ..params_for(sr) }, &x, sr);
         let tot: f64 = base.iter().sum();
         for (name, v) in [("ungated", base), ("gated", gated)] {
-            println!("audibility {name:<8} removed energy (% of ungated total): masked {:5.1} | within +-{GATE_RAMP_DB} dB {:5.1} | audible {:5.1}", v[0] / tot * 100.0, v[1] / tot * 100.0, v[2] / tot * 100.0);
+            say!("audibility {name:<8} removed energy (% of ungated total): masked {:5.1} | within +-{GATE_RAMP_DB} dB {:5.1} | audible {:5.1}", v[0] / tot * 100.0, v[1] / tot * 100.0, v[2] / tot * 100.0);
         }
         return;
     }
     if flags.iter().any(|f| f == "--attacks") {
         let (rise, pre, n) = attacks(&p, &x, sr);
-        println!("attacks    {n} hits | median rise 10-90% {rise:.2} ms | median pre-energy (5-25 ms before peak) {pre:+.1} dB");
+        say!("attacks    {n} hits | median rise 10-90% {rise:.2} ms | median pre-energy (5-25 ms before peak) {pre:+.1} dB");
         return;
     }
     if flags.iter().any(|f| f == "--phase") {
-        println!("phase      {}", phase_dev(&p, &x, sr).iter().zip(BANDS).map(|((d, big, n), (lo, _))| format!("{lo:>5.0}+ {d:5.1}deg {:4.1}%>30 ({n})", big * 100.0)).collect::<Vec<_>>().join(" | "));
+        say!("phase      {}", phase_dev(&p, &x, sr).iter().zip(BANDS).map(|((d, big, n), (lo, _))| format!("{lo:>5.0}+ {d:5.1}deg {:4.1}%>30 ({n})", big * 100.0)).collect::<Vec<_>>().join(" | "));
         return;
     }
     if flags.iter().any(|f| f == "--width") {
         assert!(x.len() == 2, "--width needs stereo");
         for ((lo, hi), (c, sm)) in WIDTH_BANDS.iter().zip(width(&p, &x, sr)) {
-            println!("width      {lo:>5.0}-{hi:<5.0} Hz  coherence {c:.3}  side/mid {sm:+6.1} dB");
+            say!("width      {lo:>5.0}-{hi:<5.0} Hz  coherence {c:.3}  side/mid {sm:+6.1} dB");
         }
         return;
     }
@@ -917,21 +922,21 @@ fn main() {
         let (mut sims, coh) = repeats(&p, &x, sr);
         sims.sort_by(|a, b| a.total_cmp(b));
         let pct = |q: f64| sims[((sims.len() - 1) as f64 * q) as usize];
-        println!("repeats    best-match similarity over {} segments: p10 {:.3} | p50 {:.3} | p90 {:.3} | max {:.3}", sims.len(), pct(0.1), pct(0.5), pct(0.9), pct(1.0));
-        println!("coherence  top-200 aligned pairs: {}", coh.iter().zip(BANDS).map(|(c, (lo, _))| format!("{lo:>5.0}+ {c:.3}")).collect::<Vec<_>>().join(" | "));
+        say!("repeats    best-match similarity over {} segments: p10 {:.3} | p50 {:.3} | p90 {:.3} | max {:.3}", sims.len(), pct(0.1), pct(0.5), pct(0.9), pct(1.0));
+        say!("coherence  top-200 aligned pairs: {}", coh.iter().zip(BANDS).map(|(c, (lo, _))| format!("{lo:>5.0}+ {c:.3}")).collect::<Vec<_>>().join(" | "));
         return;
     }
     if flags.iter().any(|f| f == "--holes") {
         for n in [2048, 1152] {
             let r = hole_rates(n * sr as usize / 48000, &x, sr);
-            println!("holes n={n:<5} {}", r.iter().zip(BANDS).map(|(v, (lo, _))| format!("{:>5.0}+ {:5.2}%", lo, v * 100.0)).collect::<Vec<_>>().join(" | "));
+            say!("holes n={n:<5} {}", r.iter().zip(BANDS).map(|(v, (lo, _))| format!("{:>5.0}+ {:5.2}%", lo, v * 100.0)).collect::<Vec<_>>().join(" | "));
         }
         return;
     }
     let st = Stft::new(p.n, p.hop, len);
     let rt = st.resynth(&x[0], |_, _| {});
     let rt_err = rt.iter().zip(&x[0]).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
-    println!("stft rt    max |err| = {rt_err:.3e}");
+    say!("stft rt    max |err| = {rt_err:.3e}");
 
     let (clean, gain, st) = denoise(&p, &x, sr);
     let removed: Vec<Vec<f64>> = x.iter().zip(&clean).map(|(o, c)| o.iter().zip(c).map(|(a, b)| a - b).collect()).collect();
@@ -940,10 +945,10 @@ fn main() {
     let noise_path = out_dir.join(format!("{title} - Removed Noise.wav"));
     let oc = write_wav24(&clean_path, &clean, sr);
     let on = write_wav24(&noise_path, &removed, sr);
-    println!("wrote      {}\n           {}", clean_path.display(), noise_path.display());
-    println!("peak       clean {:.2} dBFS | removed {:.2} dBFS | original {:.2} dBFS", peak_db(&clean), peak_db(&removed), peak_db(&x));
-    if oc + on > 0 { println!("CLIPPING   {oc} clean / {on} removed samples exceeded full scale (clamped, not normalised)"); }
-    println!("rms change {:+.2} dB", 20.0 * (rms(&clean) / rms(&x)).log10());
+    say!("wrote      {}\n           {}", clean_path.display(), noise_path.display());
+    say!("peak       clean {:.2} dBFS | removed {:.2} dBFS | original {:.2} dBFS", peak_db(&clean), peak_db(&removed), peak_db(&x));
+    if oc + on > 0 { say!("CLIPPING   {oc} clean / {on} removed samples exceeded full scale (clamped, not normalised)"); }
+    say!("rms change {:+.2} dB", 20.0 * (rms(&clean) / rms(&x)).log10());
 
     // energy-weighted attenuation per band: 10log10(sum g²P / sum P)
     let bins = st.bins();
@@ -962,11 +967,11 @@ fn main() {
         }
     }
     for ((lo, hi), (num, den)) in BANDS.iter().zip(acc) {
-        println!("band       {:>5.0}-{:<6} Hz  {:+.2} dB", lo, if *hi == f64::MAX { "nyq".into() } else { format!("{hi:.0}") }, 10.0 * (num / den).log10());
+        say!("band       {:>5.0}-{:<6} Hz  {:+.2} dB", lo, if *hi == f64::MAX { "nyq".into() } else { format!("{hi:.0}") }, 10.0 * (num / den).log10());
     }
 
     let (eo, er) = (envelope(&x, sr as usize), envelope(&removed, sr as usize));
-    println!("env corr   {:.3} (1 s RMS, original vs removed)", pearson(&eo, &er));
+    say!("env corr   {:.3} (1 s RMS, original vs removed)", pearson(&eo, &er));
 
     // densest 10 s by 1 s RMS
     let w = 10.min(eo.len());
@@ -982,32 +987,32 @@ fn main() {
         name.push_str(tag);
         let path = out_dir.join(format!("{title} - {name}.wav"));
         let over = write_wav24(&path, &sig, sr);
-        println!("wrote      {} | peak {:.2} dBFS{}", path.display(), peak_db(&sig), if over > 0 { format!(" | CLIPPING {over}") } else { String::new() });
+        say!("wrote      {} | peak {:.2} dBFS{}", path.display(), peak_db(&sig), if over > 0 { format!(" | CLIPPING {over}") } else { String::new() });
         *stage = sig;
     };
     if let Some(ms) = smooth_ms {
         let sm = smooth_haze(&p, &stage, sr, ms);
-        println!("smooth     {ms} ms window | rms change {:+.2} dB", 20.0 * (rms(&sm) / rms(&stage)).log10());
+        say!("smooth     {ms} ms window | rms change {:+.2} dB", 20.0 * (rms(&sm) / rms(&stage)).log10());
         emit("smooth", sm, &mut stage);
     }
     if let Some(amount) = widen_amt {
         match widen(&p, &stage, sr, amount) {
-            None => println!("widen      needs stereo, skipped"),
+            None => say!("widen      needs stereo, skipped"),
             Some((wd, info)) => {
-                println!("widen      target side/mid {:+.1} dB (3.5-13 kHz x{amount}) | 16 kHz+: {:+.1} -> {:+.1} dB", info.ref_side_mid_db, info.top_before_db, info.top_after_db);
+                say!("widen      target side/mid {:+.1} dB (3.5-13 kHz x{amount}) | 16 kHz+: {:+.1} -> {:+.1} dB", info.ref_side_mid_db, info.top_before_db, info.top_after_db);
                 emit("widen", wd, &mut stage);
             }
         }
     }
     let excited = excite_db.and_then(|db| match excite(&p, &stage, sr, db) {
-        None => { println!("excite     no codec lowpass found, skipped"); None }
+        None => { say!("excite     no codec lowpass found, skipped"); None }
         Some((ex, info)) => {
-            println!("excite     cutoff {:.0} Hz | slope {:+.1} dB/oct | shift {:.0} Hz | level {db:+.1} dB", info.cutoff_hz, info.slope_db_oct, info.shift_hz);
+            say!("excite     cutoff {:.0} Hz | slope {:+.1} dB/oct | shift {:.0} Hz | level {db:+.1} dB", info.cutoff_hz, info.slope_db_oct, info.shift_hz);
             let st = Stft::new(p.n, p.hop, len);
             let (lc, le) = (ltas(&st, &stage), ltas(&st, &ex));
             let band = |l: &[f64], a: f64, b: f64| { let r = (a / sr as f64 * p.n as f64) as usize..(b / sr as f64 * p.n as f64) as usize; 10.0 * (r.clone().map(|f| 10f64.powf(l[f] / 10.0)).sum::<f64>() / r.len() as f64).log10() };
             for a in (12000..22000).step_by(2000).filter(|a| (*a as f64) < sr as f64 / 2.0) {
-                println!("ltas       {:>5}-{:<5} Hz  before {:6.1} dB -> excited {:6.1} dB", a, a + 2000, band(&lc, a as f64, (a + 2000) as f64), band(&le, a as f64, (a + 2000) as f64));
+                say!("ltas       {:>5}-{:<5} Hz  before {:6.1} dB -> excited {:6.1} dB", a, a + 2000, band(&lc, a as f64, (a + 2000) as f64), band(&le, a as f64, (a + 2000) as f64));
             }
             emit("excite", ex.clone(), &mut stage);
             Some(ex)
@@ -1016,7 +1021,10 @@ fn main() {
     let mut panels = vec![mono(&x), mono(&removed)];
     if let Some(ex) = &excited { panels.push(mono(ex)); }
     spectrogram_png(&png_path, &panels.iter().map(|v| v.as_slice()).collect::<Vec<_>>(), p.n, p.hop);
-    println!("spectro    {} ({}-{} s; original / removed{}, each normalised)", png_path.display(), start, start + w, if excited.is_some() { " / excited" } else { "" });
+    say!("spectro    {} ({}-{} s; original / removed{}, each normalised)", png_path.display(), start, start + w, if excited.is_some() { " / excited" } else { "" });
+    let report_path = out_dir.join(format!("{title} - Report.txt"));
+    std::fs::write(&report_path, REPORT.lock().unwrap().as_str()).unwrap();
+    println!("report     {}", report_path.display());
 }
 
 #[cfg(test)]

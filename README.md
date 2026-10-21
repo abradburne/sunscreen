@@ -14,6 +14,8 @@ Every stage is there because a measurement on real Suno tracks showed the proble
 brew install abradburne/tap/sunscreen
 ```
 
+**Mac app (no terminal):** download `Sunscreen-<version>-macos.zip` from the GitHub Releases page, unzip, and move `Sunscreen.app` to Applications. Drop MP3 or WAV files on its icon; results land in a `sunscreen` folder next to each file (recommended settings: `--smooth --widen --excite`), and Finder opens it when done. The app isn't notarised, so the first time, run `xattr -dr com.apple.quarantine /Applications/Sunscreen.app` (or right-click → Open).
+
 **Prebuilt binaries:** grab the archive for your platform from the GitHub Releases page (macOS arm64/x86_64, Linux x86_64/arm64, Windows x86_64), unpack it, and put `sunscreen` on your PATH. On macOS, clear the download quarantine once: `xattr -d com.apple.quarantine sunscreen`.
 
 **From source:**
@@ -60,6 +62,7 @@ Each run always writes:
 | `<title> - Clean.wav` | The denoised track |
 | `<title> - Removed Noise.wav` | Original minus Clean, sample for sample. Listen to it to hear what was taken. If you hear drums or vocals in it, the denoise is taking music. |
 | `<title> - Spectrogram.png` | The densest 10 s: original, removed, and (with `--excite`) the final result, each panel normalised separately |
+| `<title> - Report.txt` | The run report printed in the terminal, saved for later |
 
 Each optional stage then writes a **cumulative** file, so you can A/B one step at a time:
 

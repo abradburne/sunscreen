@@ -47,6 +47,21 @@ jobs:
           fi
           gh release upload "$TAG" "$file"
 
+  # Drag-and-drop macOS app wrapping a universal binary.
+  app:
+    needs: build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          gh release download "$TAG" -p '*apple-darwin.tar.gz'
+          for f in *.tar.gz; do tar xzf "$f"; done
+          osacompile -o Sunscreen.app macos/droplet.applescript
+          lipo -create sunscreen-*-apple-darwin/sunscreen -output Sunscreen.app/Contents/Resources/sunscreen
+          codesign --force --deep -s - Sunscreen.app
+          ditto -c -k --keepParent Sunscreen.app "Sunscreen-$TAG-macos.zip"
+          gh release upload "$TAG" "Sunscreen-$TAG-macos.zip"
+
   # Regenerate the formula in abradburne/homebrew-tap (push via deploy key secret).
   tap:
     needs: build
