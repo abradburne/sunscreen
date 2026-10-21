@@ -1,6 +1,6 @@
 //! Adaptive spectral denoise for Suno renders: rolling-percentile noise floor,
 //! linked-stereo power-subtraction mask, original phase kept.
-//! Usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]]
+//! Usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]]
 
 use realfft::RealFftPlanner;
 use realfft::num_complex::Complex;
@@ -856,7 +856,7 @@ fn denoise(p: &Params, x: &[Vec<f64>], sr: u32) -> (Vec<Vec<f64>>, Vec<f32>, Stf
 
 fn main() {
     let (flags, args): (Vec<String>, Vec<String>) = std::env::args().partition(|a| a.starts_with("--"));
-    if args.len() < 2 { eprintln!("usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]]"); std::process::exit(2); }
+    if args.len() < 2 { eprintln!("usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]]"); std::process::exit(2); }
     // --excite alone = default level; --excite=-6 = 6 dB under the extrapolated slope
     // --smooth alone = default window; --smooth=150 = 150 ms
     let smooth_ms = flags.iter().find_map(|f| f.strip_prefix("--smooth"))
@@ -873,7 +873,7 @@ fn main() {
 
     let (x, sr) = read_audio(input);
     let len = x[0].len();
-    let p = Params { gate: flags.iter().any(|f| f == "--gate"), ..params_for(sr) };
+    let p = Params { gate: !flags.iter().any(|f| f == "--no-gate"), ..params_for(sr) };
     println!("input      {} | {} Hz, {} ch, {} samples ({:.1} s)", input.display(), sr, x.len(), len, len as f64 / sr as f64);
     println!("params     n_fft={} hop={} hann | block={}s p{} x{} | alpha {}->{} over {}-{} Hz | blur {}bin x {}fr",
         p.n, p.hop, p.block_s, (p.pctl * 100.0) as u32, p.noise_scale, p.alpha_lo, p.alpha_hi, ALPHA_RAMP.0, ALPHA_RAMP.1, p.sigma_f, p.sigma_t);
@@ -889,7 +889,7 @@ fn main() {
         return;
     }
     if flags.iter().any(|f| f == "--audibility") {
-        let base = audibility(&p, &x, sr);
+        let base = audibility(&Params { gate: false, ..params_for(sr) }, &x, sr);
         let gated = audibility(&Params { gate: true, ..params_for(sr) }, &x, sr);
         let tot: f64 = base.iter().sum();
         for (name, v) in [("ungated", base), ("gated", gated)] {

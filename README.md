@@ -8,6 +8,12 @@ Every stage is there because a measurement on real Suno tracks showed the proble
 
 ## Quick start
 
+**Homebrew (macOS, Linux):**
+
+```sh
+brew install abradburne/tap/sunscreen
+```
+
 **Prebuilt binaries:** grab the archive for your platform from the GitHub Releases page (macOS arm64/x86_64, Linux x86_64/arm64, Windows x86_64), unpack it, and put `sunscreen` on your PATH. On macOS, clear the download quarantine once: `xattr -d com.apple.quarantine sunscreen`.
 
 **From source:**
@@ -20,7 +26,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install --path .
 
 # recommended: everything on
-sunscreen "My Song.mp3" out --gate --smooth --widen --excite
+sunscreen "My Song.mp3" out --smooth --widen --excite
 ```
 
 A 5-minute track takes about 10 seconds on a laptop.
@@ -28,13 +34,13 @@ A 5-minute track takes about 10 seconds on a laptop.
 Do a whole folder:
 
 ```sh
-for f in *.mp3; do sunscreen "$f" cleaned "${f%.mp3}" --gate --smooth --widen --excite; done
+for f in *.mp3; do sunscreen "$f" cleaned "${f%.mp3}" --smooth --widen --excite; done
 ```
 
 ## Usage
 
 ```
-sunscreen <in.wav|in.mp3> [out_dir] [title] [--gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]]
+sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]]
 ```
 
 | Argument | Default | Meaning |
@@ -51,7 +57,7 @@ Each run always writes:
 
 | File | What it is |
 |---|---|
-| `<title> - Clean.wav` | The denoised track (with `--gate`, the gated denoise) |
+| `<title> - Clean.wav` | The denoised track |
 | `<title> - Removed Noise.wav` | Original minus Clean, sample for sample. Listen to it to hear what was taken. If you hear drums or vocals in it, the denoise is taking music. |
 | `<title> - Spectrogram.png` | The densest 10 s: original, removed, and (with `--excite`) the final result, each panel normalised separately |
 
@@ -81,7 +87,7 @@ The run also prints a report: the parameters used, the STFT round-trip error (sh
 
 **Expect:** about −0.2 to −0.7 dB overall, more in the highs. It's subtle by design.
 
-### `--gate` — only cut haze you can hear
+### Hearing-model gate (on by default; `--no-gate` turns it off) — only cut haze you can hear
 
 **Problem:** 42–83% of what the denoiser removed (by energy) was haze already *masked* by louder music: inaudible, and exactly where cutting damages the music.
 
@@ -89,7 +95,7 @@ The run also prints a report: the parameters used, the STFT round-trip error (sh
 
 **Measured:** wasted removal drops 48–80%, while 99% of the removal of *audible* haze is kept. On Glass Hearts, how closely the removed signal follows the music falls from 0.549 to 0.419 (less music taken), and the vocal-melody lines mostly vanish from the removed signal.
 
-**Status:** opt-in until confirmed by ear. Listen for the haze texture switching on and off as vocal phrases start and stop.
+**If it breathes:** if you hear the haze texture switching on and off as vocal phrases start and stop, compare with `--no-gate`, which cuts everywhere the haze is above the floor.
 
 ### `--smooth[=ms]` — steady out the static (default 85 ms)
 
@@ -140,7 +146,7 @@ Each one prints a measurement and exits without writing audio. They're how every
 
 | Flag | Measures | Use it to |
 |---|---|---|
-| `--audibility` | Share of removed energy where the haze is masked / borderline / audible, gated vs ungated | Check that `--gate` saves wasted removal |
+| `--audibility` | Share of removed energy where the haze is masked / borderline / audible, gated vs ungated | Check that the gate saves wasted removal |
 | `--flutter` | How much the haze level jumps around (~85 ms readings), against a steady-noise baseline | Check `--smooth`. Only stage-to-stage comparisons are fair. |
 | `--width` | L/R coherence and side/mid ratio per band | Check `--widen`; spot collapsed highs |
 | `--attacks` | Median 10–90% attack rise time and energy before the peak at detected hits | **Regression check**: make sure the chain doesn't dull drums |
