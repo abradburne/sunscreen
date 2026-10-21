@@ -1,0 +1,7 @@
+/target
+*.mp3
+*.wav
+*.png
+gas*/
+.DS_Store
+IDEAS.md
