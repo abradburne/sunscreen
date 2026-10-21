@@ -16,6 +16,9 @@ Note: tests that call `params_for` directly run with the gate **off** (the CLI t
 | `widen_restores_high_width_mono_safe` | independent L/R noise whose content above 12 kHz is forced to mono | L+R changes by less than 1e-9; 16 to 20 kHz coherence goes from above 0.99 to below 0.9; side/mid there rises by more than 10 dB; the width below 7 kHz moves by less than 0.01 dB |
 | `gate_spares_masked_haze_keeps_exposed` | harmonics of 220 Hz (1 to 12, amplitude 0.08/h) on 40% of each second, over hiss (0.01) | with the gate, removal in 200 Hz to 2.8 kHz while the notes play drops below half of the ungated value (masked); removal in 8 to 16 kHz stays above 90% of it (exposed) |
 | `modspec_finds_frame_rate_flutter` | 20 s of white noise, with and without 10% amplitude flutter at 75 Hz | in every band, steady noise reads under 4 dB at 75 Hz and the fluttered noise reads over 10 dB |
+| `lufs_reads_reference_sine` | stereo 1 kHz sine, amplitude 0.1, at 48 and 44.1 kHz | reads -20 LUFS within 0.1 |
+| `true_peak_sees_between_samples` | fs/4 sine at 45 degrees (every sample 0.707 of the true peak) | sample peak -3.01 dB; true peak within 0.2 dB of 0 |
+| `master_hits_loudness_and_ceiling` | quiet stereo noise with a sharp hit every 0.5 s | output within 0.1 LU of -14 LUFS, true peak at or under -1 dBTP, more than 1 dB of limiting |
 | `match_follows_reference_tilt_capped` | white noise; a reference is the same noise with a smooth `tanh` tilt of 1.5 dB around 1 kHz | the correction between 250 Hz and 4 kHz matches the tilt to within 0.6 dB; with a 12 dB tilt no value exceeds `MATCH_MAX_DB`; the correction at 23 kHz is zero (fade) |
 
 ## Positive and negative controls

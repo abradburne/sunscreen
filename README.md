@@ -13,12 +13,13 @@ Suno songs share a few audible flaws. sunscreen fixes each one in a separate, ge
 3. **Widens the top end** (`--widen`). Suno's highs collapse to near-mono. sunscreen gives the cymbals and air back the same width the rest of the track already has. The mono fold-down is unchanged.
 4. **Rebuilds the missing top octave** (`--excite`). Suno's MP3s stop dead at about 18 kHz. sunscreen fills that region from the music just below it, the way HE-AAC does.
 5. **Balances the tone like a commercial master** (`--match`). Each Suno track comes out with its own tilt (one boomy, one harsh). sunscreen compares it with the average of 12 commercially mastered pop songs and corrects it gently (±3 dB at most, without changing loudness). Or give it a song you love: `--match=ref.wav`.
+6. **Masters the level** (`--master`). Suno tracks arrive anywhere from −11.6 to −15.6 LUFS. sunscreen sets them all to the streaming standard (−14 LUFS) with a true-peak limiter at −1 dBTP, so an album plays at an even level and survives Spotify's re-encoding without clipping.
 
 Every step exists because a measurement on real Suno tracks showed the problem. Ideas that measured as non-problems (spectral holes, phase smear, soft attacks, repeat averaging, a codec frame-rate fingerprint) were dropped. [docs/](docs/README.md) explains exactly how every step works, and [docs/findings.md](docs/findings.md) has the measurements.
 
 ## Hear it
 
-30 seconds of *Glass Hearts & Gasoline* (a Suno track), full chain `--smooth --widen --excite --match` (16-bit FLAC; the links download):
+30 seconds of *Glass Hearts & Gasoline* (a Suno track; hear the whole song and the rest of the release at [sidetrax.fm/releases/love-this](https://sidetrax.fm/releases/love-this)), full chain `--smooth --widen --excite --match --master` (16-bit FLAC; the links download):
 
 - [Before](https://github.com/abradburne/sunscreen/releases/download/v0.4.0/glass-hearts-30s-before.flac): the Suno MP3, untouched
 - [After](https://github.com/abradburne/sunscreen/releases/download/v0.4.0/glass-hearts-30s-after.flac): sunscreen's output
@@ -36,7 +37,7 @@ Every step exists because a measurement on real Suno tracks showed the problem. 
 brew install abradburne/tap/sunscreen
 ```
 
-**Mac app (no terminal):** download `Sunscreen-<version>-macos.zip` from the GitHub Releases page, unzip, and move `Sunscreen.app` to Applications. Drop MP3 or WAV files on its icon; results land in a `sunscreen` folder next to each file (recommended settings: `--smooth --widen --excite --match`), and Finder opens it when done. The app isn't notarised, so the first time, run `xattr -dr com.apple.quarantine /Applications/Sunscreen.app` (or right-click → Open).
+**Mac app (no terminal):** download `Sunscreen-<version>-macos.zip` from the GitHub Releases page, unzip, and move `Sunscreen.app` to Applications. Drop MP3 or WAV files on its icon; results land in a `sunscreen` folder next to each file (recommended settings: `--smooth --widen --excite --match --master`), and Finder opens it when done. The app isn't notarised, so the first time, run `xattr -dr com.apple.quarantine /Applications/Sunscreen.app` (or right-click → Open).
 
 **Prebuilt binaries:** grab the archive for your platform from the GitHub Releases page (macOS arm64/x86_64, Linux x86_64/arm64, Windows x86_64), unpack it, and put `sunscreen` on your PATH. On macOS, clear the download quarantine once: `xattr -d com.apple.quarantine sunscreen`.
 
@@ -50,7 +51,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install --path .
 
 # recommended: everything on
-sunscreen "My Song.mp3" out --smooth --widen --excite --match
+sunscreen "My Song.mp3" out --smooth --widen --excite --match --master
 ```
 
 A 5-minute track takes about 10 seconds on a laptop.
@@ -58,13 +59,13 @@ A 5-minute track takes about 10 seconds on a laptop.
 Do a whole folder:
 
 ```sh
-for f in *.mp3; do sunscreen "$f" cleaned "${f%.mp3}" --smooth --widen --excite --match; done
+for f in *.mp3; do sunscreen "$f" cleaned "${f%.mp3}" --smooth --widen --excite --match --master; done
 ```
 
 ## Usage
 
 ```
-sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]]
+sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]] [--master[=LUFS]]
 ```
 
 | Argument | Default | Meaning |
@@ -73,7 +74,7 @@ sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen
 | `out_dir` | the input's folder | Where outputs go (created if missing) |
 | `title` | the input's file name | Prefix for output file names |
 
-The input length and sample alignment are kept exactly. Nothing is normalised, limited or EQ'd; if a stage pushes a sample past full scale, the run prints `CLIPPING` instead of turning the track down.
+The input length and sample alignment are kept exactly. Only `--match` changes tone, and only `--master` changes level. Without `--master`, if a stage pushes a sample past full scale, the run prints `CLIPPING` instead of turning the track down.
 
 ## Output files
 
@@ -89,7 +90,7 @@ Each run always writes:
 Each optional stage then writes a **cumulative** file, so you can A/B one step at a time:
 
 ```
-Clean → Clean+smooth → Clean+smooth+widen → Clean+smooth+widen+excite → …+match
+Clean → Clean+smooth → Clean+smooth+widen → Clean+smooth+widen+excite → …+match → …+master
 ```
 
 The stages always run in that order. A file name lists only the stages you turned on, so `--widen --excite` gives `Clean+widen` and `Clean+widen+excite`.
@@ -174,6 +175,20 @@ The run prints the applied correction at 63 Hz to 16 kHz.
 
 **Status:** opt-in, in the recommended command. To aim at your own genre instead, match a song you love: `--match="Reference Song.wav"`.
 
+### `--master[=LUFS]` — streaming-ready level (default −14 LUFS)
+
+**Problem:** Suno's loudness is all over the place (−11.6 to −15.6 LUFS on four tracks), so an album jumps in level. Streaming services normalise to about −14 LUFS, and a file that peaks at 0 dBFS *between* samples can clip once they re-encode it.
+
+**How:**
+- **Measure:** integrated loudness per ITU-R BS.1770-4, the standard every LUFS meter uses (K-weighting, 400 ms blocks, −70 LUFS and −10 LU gates).
+- **Gain** to the target.
+- **True-peak limiter:** looks at the peaks between samples (4× oversampled), ceiling −1 dBTP. It looks 2 ms ahead, so the gain eases down before each peak instead of snapping, and recovers over 80 ms. Linked across channels, so the stereo image stays put.
+- **Iterate:** limiting removes a little loudness, so it re-measures and corrects until it's within 0.05 LU of the target.
+
+**Measured:** readings match ffmpeg's independent meter to 0.1 dB. At −14 LUFS the limiter barely touches Suno tracks; it's mostly a level match. At `--master=-9`, Glass Hearts takes 4.4 dB of limiting and still lands at exactly −9.0 LUFS / −1.0 dBTP, with no measurable dulling of drum hits.
+
+**Tuning:** louder for club or radio: `--master=-9`. If the run warns about heavy limiting (over 6 dB), back the target off.
+
 ## A/B workflow
 
 1. Load the original, `Clean`, and each `Clean+…` file into your DAW, level-matched.
@@ -216,6 +231,8 @@ Beyond the flags, the knobs are constants near the top of `src/main.rs` (rebuild
 | `WIDEN_FROM_HZ`, `WIDEN_MAX_G`, `WIDEN_DELAY_MS` | 10 kHz, 0.5, 5 ms | Where widening starts, its cap, and the decorrelation delay |
 | `CUTOFF_DROP_DB`, `EXCITE_TOP_HZ` | 25 dB, 22 kHz | Cutoff detection, and how high the exciter fills |
 | `MATCH_MAX_DB`, `MATCH_SMOOTH_OCT`, `MATCH_RANGE` | ±3 dB, 1 octave, 40 Hz–12 kHz | How far, how smoothly, and where `--match` corrects |
+| `MASTER_DEFAULT_LUFS`, `TRUE_PEAK_DBTP` | −14 LUFS, −1 dBTP | `--master` target and peak ceiling |
+| `LIMIT_ATTACK_MS`, `LIMIT_RELEASE_MS` | 2 ms, 80 ms | Limiter look-ahead and release |
 | `POP_TARGET` | 12-track average | The built-in `--match` target; replace with your own `--profile` averages |
 
 ## What it can't do
@@ -228,7 +245,7 @@ Beyond the flags, the knobs are constants near the top of `src/main.rs` (rebuild
 ## Development
 
 ```sh
-cargo test --release    # 9 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
+cargo test --release    # 12 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
 cargo build --release   # binary at target/release/sunscreen
 ```
 

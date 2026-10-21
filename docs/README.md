@@ -6,14 +6,15 @@ Everything lives in `src/main.rs`. Names in `code font` (`FLOOR_KNOTS`, `noise_f
 
 ## Overview
 
-sunscreen cleans tracks rendered by Suno. It does four separate jobs:
+sunscreen cleans tracks rendered by Suno. It does five separate jobs:
 
 1. **Denoise** a broadband "haze" that sits under the music and is strongest in the highs. The haze level follows the music, so the noise floor is estimated as a rolling percentile rather than from a fixed profile. A hearing model (the gate) then limits the cut to haze you could actually hear.
 2. **Smooth** the haze so it stops fluttering (optional, `--smooth`).
 3. **Widen** the stereo image above 10 kHz, where Suno output collapses toward mono (optional, `--widen`).
 4. **Rebuild the top end** above the MP3 lowpass (optional, `--excite`), and **nudge the tonal balance** toward a commercial-master target (optional, `--match`).
+5. **Master** to a loudness target with a true-peak limiter (optional, `--master`).
 
-All processing is done in the short-time Fourier transform (STFT) domain with the original phase kept. Nothing is normalised, limited or dithered. The output length matches the input sample for sample.
+All processing is done in the short-time Fourier transform (STFT) domain with the original phase kept. Nothing is normalised or limited except by the opt-in `--master` stage, and nothing is dithered. The output length matches the input sample for sample.
 
 ## Signal flow
 
@@ -51,10 +52,13 @@ All processing is done in the short-time Fourier transform (STFT) domain with th
  match_curve + EQ ... --match                          match.md
       |
       v
+ master ............. --master (LUFS + true-peak limit) master.md
+      |
+      v
  24-bit WAV (write_wav24), one cumulative file per enabled stage
 ```
 
-The order is fixed: denoise, smooth, widen, excite, match. Each optional stage takes the previous stage's output (`stage` in `main`), and each writes its own file (`Clean+smooth`, `Clean+smooth+widen`, ...), so you can audition one step at a time.
+The order is fixed: denoise, smooth, widen, excite, match, master. Each optional stage takes the previous stage's output (`stage` in `main`), and each writes its own file (`Clean+smooth`, `Clean+smooth+widen`, ...), so you can audition one step at a time.
 
 ## Pages
 
@@ -67,6 +71,7 @@ The order is fixed: denoise, smooth, widen, excite, match. Each optional stage t
 | [widen.md](widen.md) | `--widen`: restoring high-frequency stereo width without touching the mono sum |
 | [excite.md](excite.md) | `--excite`: spectral band replication above the codec cutoff |
 | [match.md](match.md) | `--match`: static EQ toward a target long-term spectrum |
+| [master.md](master.md) | `--master`: BS.1770 loudness, true peak, the look-ahead limiter |
 | [diagnostics.md](diagnostics.md) | Every measurement flag, what it computes, how to read it |
 | [findings.md](findings.md) | What was measured, what was built because of it, and what was rejected |
 | [testing.md](testing.md) | The test suite and the mutation-check discipline |

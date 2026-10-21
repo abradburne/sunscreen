@@ -1,6 +1,6 @@
 //! Adaptive spectral denoise for Suno renders: rolling-percentile noise floor,
 //! linked-stereo power-subtraction mask, original phase kept.
-//! Usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]]
+//! Usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]] [--master[=LUFS]]
 
 use realfft::RealFftPlanner;
 use realfft::num_complex::Complex;
@@ -77,6 +77,14 @@ fn ltas_target(r: &[Vec<f64>], rsr: u32) -> impl Fn(f64) -> f64 {
         rl[i] + (rl[i + 1] - rl[i]) * (k - i as f64)
     }
 }
+
+// --master: integrated loudness target (LUFS) and true-peak ceiling (dBTP);
+// limiter look-ahead each side of a peak, and release time
+const MASTER_DEFAULT_LUFS: f64 = -14.0;
+const TRUE_PEAK_DBTP: f64 = -1.0;
+const LIMIT_ATTACK_MS: f64 = 2.0;
+const LIMIT_RELEASE_MS: f64 = 80.0;
+const TP_HALF_TAPS: usize = 6; // 12 taps per phase, as in BS.1770's reference 48-tap 4x filter
 
 const TONE_HZ: [f64; 10] = [63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 3000.0, 4000.0, 8000.0, 12000.0];
 const BANDS: [(f64, f64); 5] = [(0.0, 350.0), (350.0, 3500.0), (3500.0, 7000.0), (7000.0, 12000.0), (12000.0, f64::MAX)];
@@ -922,6 +930,134 @@ fn third_octaves(lt: &[f64], sr: u32, n: usize) -> Vec<(f64, f64)> {
 }
 
 /// Core DSP. Returns (clean, gain mask [frames][bins], stft geometry).
+/// Direct-form-I biquad.
+fn biquad(x: &[f64], b: [f64; 3], a: [f64; 2]) -> Vec<f64> {
+    let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+    x.iter().map(|&v| {
+        let y = b[0] * v + b[1] * x1 + b[2] * x2 - a[0] * y1 - a[1] * y2;
+        (x2, x1, y2, y1) = (x1, v, y1, y);
+        y
+    }).collect()
+}
+
+/// BS.1770-4 K-weighting (high shelf + high pass) at any sample rate: the
+/// analog prototype through the bilinear transform, as libebur128 does; at
+/// 48 kHz it reproduces the standard's coefficient table.
+fn k_weight(x: &[f64], sr: u32) -> Vec<f64> {
+    let (f0, g, q) = (1681.974450955533, 3.999843853973347, 0.7071752369554196);
+    let k = (PI * f0 / sr as f64).tan();
+    let (vh, a0) = (10f64.powf(g / 20.0), 1.0 + k / q + k * k);
+    let vb = vh.powf(0.4996667741545416);
+    let shelf = biquad(x, [(vh + vb * k / q + k * k) / a0, 2.0 * (k * k - vh) / a0, (vh - vb * k / q + k * k) / a0], [2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0]);
+    let (f0, q) = (38.13547087602444, 0.5003270373238773);
+    let k = (PI * f0 / sr as f64).tan();
+    let a0 = 1.0 + k / q + k * k;
+    biquad(&shelf, [1.0, -2.0, 1.0], [2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0])
+}
+
+/// Integrated loudness, BS.1770-4: 400 ms blocks every 100 ms, absolute gate
+/// at -70 LUFS, relative gate 10 LU below the absolute-gated mean.
+fn lufs(x: &[Vec<f64>], sr: u32) -> f64 {
+    let kw: Vec<Vec<f64>> = x.iter().map(|c| k_weight(c, sr)).collect();
+    let (blk, hop) = ((0.4 * sr as f64) as usize, (0.1 * sr as f64) as usize);
+    let z: Vec<f64> = (0..kw[0].len().saturating_sub(blk) / hop + 1).filter(|j| j * hop + blk <= kw[0].len())
+        .map(|j| kw.iter().map(|c| c[j * hop..j * hop + blk].iter().map(|v| v * v).sum::<f64>() / blk as f64).sum()).collect();
+    let loud = |m: f64| -0.691 + 10.0 * m.log10();
+    let gated_mean = |thr: f64| { let v: Vec<f64> = z.iter().copied().filter(|&m| loud(m) > thr).collect(); v.iter().sum::<f64>() / v.len() as f64 };
+    loud(gated_mean(loud(gated_mean(-70.0)) - 10.0).max(1e-30))
+}
+
+/// Linked true-peak envelope: per sample, the largest |value| at the sample and
+/// at the three 4x-oversampled points after it (windowed-sinc interpolation).
+fn true_peak_env(x: &[Vec<f64>]) -> Vec<f64> {
+    let h = TP_HALF_TAPS as isize;
+    let taps: Vec<Vec<f64>> = (1..4).map(|p| (-h + 1..=h).map(|k| {
+        let t = k as f64 - p as f64 / 4.0;
+        let w = 0.5 + 0.5 * (PI * t / (h as f64 + 0.5)).cos();
+        if t == 0.0 { 1.0 } else { (PI * t).sin() / (PI * t) * w }
+    }).collect()).collect();
+    let n = x[0].len();
+    let mut env = vec![0.0f64; n];
+    for c in x {
+        for i in 0..n {
+            let mut m = c[i].abs();
+            for tp in &taps {
+                let mut acc = 0.0;
+                for (j, w) in tp.iter().enumerate() {
+                    let idx = i as isize - h + 1 + j as isize;
+                    if idx >= 0 && (idx as usize) < n { acc += c[idx as usize] * w; }
+                }
+                m = m.max(acc.abs());
+            }
+            env[i] = env[i].max(m);
+        }
+    }
+    env
+}
+
+/// Minimum over [i - r, i + r] for every i (monotonic deque, O(n)).
+fn sliding_min(v: &[f64], r: usize) -> Vec<f64> {
+    let mut dq = std::collections::VecDeque::new();
+    let mut next = 0;
+    (0..v.len()).map(|i| {
+        while next < v.len() && next <= i + r {
+            while dq.back().is_some_and(|&j: &usize| v[j] >= v[next]) { dq.pop_back(); }
+            dq.push_back(next);
+            next += 1;
+        }
+        while dq.front().is_some_and(|&j| j + r < i) { dq.pop_front(); }
+        v[*dq.front().unwrap()]
+    }).collect()
+}
+
+/// True-peak limiter, offline and linked across channels. The gain each sample
+/// needs is min-filtered over +-attack, then box-averaged over +-attack/2: every
+/// sample in that box saw this sample in its min window, so the smoothed gain
+/// never exceeds what this sample needs, and it ramps in before the peak.
+/// Release is a one-pole rise back toward that ceiling. Returns (out, max GR dB).
+fn limit(x: &[Vec<f64>], sr: u32, ceiling: f64) -> (Vec<Vec<f64>>, f64) {
+    let want: Vec<f64> = true_peak_env(x).iter().map(|p| (ceiling / p.max(1e-12)).min(1.0)).collect();
+    let l = ((LIMIT_ATTACK_MS * 1e-3 * sr as f64) as usize).max(2);
+    let h = sliding_min(&want, l);
+    let mut pre = vec![0.0; h.len() + 1];
+    for (i, v) in h.iter().enumerate() { pre[i + 1] = pre[i] + v; }
+    let half = l / 2;
+    let r = (-1.0 / (LIMIT_RELEASE_MS * 1e-3 * sr as f64)).exp();
+    let mut g = 1.0f64;
+    let gain: Vec<f64> = (0..h.len()).map(|i| {
+        let (a, b) = (i.saturating_sub(half), (i + half + 1).min(h.len()));
+        let s = (pre[b] - pre[a]) / (b - a) as f64;
+        g = if s < g { s } else { s + (g - s) * r };
+        g
+    }).collect();
+    let max_gr = -20.0 * gain.iter().copied().fold(1.0, f64::min).log10();
+    (x.iter().map(|c| c.iter().zip(&gain).map(|(v, g)| v * g).collect()).collect(), max_gr)
+}
+
+struct Master { in_lufs: f64, gain_db: f64, max_gr_db: f64, out_lufs: f64, out_tp_db: f64 }
+
+/// Gain to the loudness target, then true-peak limit. Limiting lowers loudness
+/// and interpolation can overshoot slightly, so iterate: re-aim the gain at the
+/// measured shortfall and tighten the ceiling by any measured overshoot.
+fn master(x: &[Vec<f64>], sr: u32, target: f64) -> (Vec<Vec<f64>>, Master) {
+    let in_lufs = lufs(x, sr);
+    let ceiling = 10f64.powf(TRUE_PEAK_DBTP / 20.0);
+    let (mut gain_db, mut ceil) = (target - in_lufs, ceiling);
+    let mut last = None;
+    for _ in 0..6 {
+        let g = 10f64.powf(gain_db / 20.0);
+        let (out, max_gr_db) = limit(&x.iter().map(|c| c.iter().map(|v| v * g).collect()).collect::<Vec<Vec<f64>>>(), sr, ceil);
+        let out_lufs = lufs(&out, sr);
+        let tp = true_peak_env(&out).into_iter().fold(0.0, f64::max);
+        let done = tp <= ceiling * 1.0001 && (out_lufs - target).abs() < 0.05;
+        if tp > ceiling { ceil *= ceiling / tp; }
+        gain_db += target - out_lufs;
+        last = Some((out, Master { in_lufs, gain_db: gain_db - (target - out_lufs), max_gr_db, out_lufs, out_tp_db: 20.0 * tp.log10() }));
+        if done { break; }
+    }
+    last.unwrap()
+}
+
 fn denoise(p: &Params, x: &[Vec<f64>], sr: u32) -> (Vec<Vec<f64>>, Vec<f32>, Stft) {
     let st = Stft::new(p.n, p.hop, x[0].len());
     let (frames, bins) = (st.frames, st.bins());
@@ -976,7 +1112,7 @@ fn denoise(p: &Params, x: &[Vec<f64>], sr: u32) -> (Vec<Vec<f64>>, Vec<f32>, Stf
 
 fn main() {
     let (flags, args): (Vec<String>, Vec<String>) = std::env::args().partition(|a| a.starts_with("--"));
-    if args.len() < 2 { eprintln!("usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]]"); std::process::exit(2); }
+    if args.len() < 2 { eprintln!("usage: sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]] [--master[=LUFS]]"); std::process::exit(2); }
     // --excite alone = default level; --excite=-6 = 6 dB under the extrapolated slope
     // --smooth alone = default window; --smooth=150 = 150 ms
     let smooth_ms = flags.iter().find_map(|f| f.strip_prefix("--smooth"))
@@ -986,6 +1122,9 @@ fn main() {
         .map(|v| v.strip_prefix('=').map_or(1.0, |n| n.parse().expect("--widen=<amount>")));
     let excite_db = flags.iter().find_map(|f| f.strip_prefix("--excite"))
         .map(|v| v.strip_prefix('=').map_or(EXCITE_DEFAULT_DB, |n| n.parse().expect("--excite=<dB>")));
+    // --master alone = -14 LUFS (streaming); --master=-9 for louder
+    let master_lufs = flags.iter().find_map(|f| f.strip_prefix("--master"))
+        .map(|v| v.strip_prefix('=').map_or(MASTER_DEFAULT_LUFS, |n| n.parse().expect("--master=<LUFS>")));
     // --match alone = built-in pop target; --match=ref.wav = that track
     let match_ref = flags.iter().find_map(|f| f.strip_prefix("--match")).map(|v| v.strip_prefix('=').map(|r| read_audio(Path::new(r))));
     let input = Path::new(&args[1]);
@@ -1201,6 +1340,12 @@ fn main() {
         let m = stage.iter().map(|c| st.resynth(c, |_, s| s.iter_mut().zip(&g).for_each(|(v, g)| *v *= g))).collect();
         emit("match", m, &mut stage);
     }
+    if let Some(target) = master_lufs {
+        let (m, info) = master(&stage, sr, target);
+        say!("master     {:.1} LUFS in | gain {:+.1} dB | limiter max {:.1} dB | out {:.1} LUFS, true peak {:.1} dBTP", info.in_lufs, info.gain_db, info.max_gr_db.abs(), info.out_lufs, info.out_tp_db);
+        if info.max_gr_db > 6.0 { say!("master     heavy limiting: try a quieter target, e.g. --master={:.0}", target - (info.max_gr_db - 6.0).ceil()); }
+        emit("master", m, &mut stage);
+    }
     let mut panels = vec![mono(&x), mono(&removed)];
     if let Some(ex) = &excited { panels.push(mono(ex)); }
     spectrogram_png(&png_path, &panels.iter().map(|v| v.as_slice()).collect::<Vec<_>>(), p.n, p.hop);
@@ -1396,5 +1541,39 @@ mod tests {
         let c = match_curve(&p, &x, sr, ltas_target(&tilted(12.0), sr), MATCH_MAX_DB);
         assert!(c.iter().all(|v| v.abs() <= MATCH_MAX_DB + 1e-9), "cap exceeded: {:?}", c.iter().enumerate().filter(|(_, v)| !(v.abs() <= MATCH_MAX_DB + 1e-9)).take(5).collect::<Vec<_>>());
         assert!(at(&c, 23000.0).abs() < 1e-9, "should fade out half an octave above MATCH_RANGE");
+    }
+
+    #[test]
+    fn lufs_reads_reference_sine() {
+        // stereo 1 kHz sine of amplitude A reads 20*log10(A) LUFS (K-weighting is +0.69 dB at 1 kHz, offset -0.691)
+        for sr in [48000u32, 44100] {
+            let x: Vec<Vec<f64>> = (0..2).map(|_| (0..10 * sr as usize).map(|i| 0.1 * (2.0 * PI * 1000.0 * i as f64 / sr as f64).sin()).collect()).collect();
+            let l = lufs(&x, sr);
+            assert!((l + 20.0).abs() < 0.1, "{sr} Hz: {l} LUFS");
+        }
+    }
+
+    #[test]
+    fn true_peak_sees_between_samples() {
+        // fs/4 sine at 45 degrees: every sample is 0.707 of the true peak
+        let x = vec![(0..4800).map(|i| (PI / 2.0 * i as f64 + PI / 4.0).sin()).collect::<Vec<f64>>()];
+        let sample_peak = x[0].iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let tp = true_peak_env(&x)[100..4700].iter().copied().fold(0.0, f64::max);
+        assert!((20.0 * sample_peak.log10() + 3.01).abs() < 0.05);
+        assert!((20.0 * tp.log10()).abs() < 0.2, "true peak {} dB", 20.0 * tp.log10());
+    }
+
+    #[test]
+    fn master_hits_loudness_and_ceiling() {
+        let sr = 48000u32;
+        let mut seed = 11u64;
+        let mut rnd = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1); (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5 };
+        // quiet noise with a sharp hit every 0.5 s: needs gain, and the hits then need limiting
+        let x: Vec<Vec<f64>> = (0..2).map(|_| (0..10 * sr as usize).map(|i| 0.02 * rnd() + if i % (sr as usize / 2) < 48 { 0.3 } else { 0.0 }).collect()).collect();
+        let (out, info) = master(&x, sr, -14.0);
+        let tp = 20.0 * true_peak_env(&out).into_iter().fold(0.0, f64::max).log10();
+        assert!((lufs(&out, sr) + 14.0).abs() < 0.1, "loudness {}", info.out_lufs);
+        assert!(tp <= TRUE_PEAK_DBTP + 0.01, "true peak {tp} dBTP");
+        assert!(info.max_gr_db > 1.0, "the hits should have needed limiting");
     }
 }
