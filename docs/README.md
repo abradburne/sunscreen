@@ -2,7 +2,7 @@
 
 These pages explain how sunscreen works at the level of the code: the algorithms, the formulas, the constants and the reasons behind them. The user-level overview is in the top-level [README](../README.md); start there if you only want to run the tool.
 
-Everything lives in `src/main.rs`. Names in `code font` (`FLOOR_KNOTS`, `noise_floor`, `match_curve`, ...) are the identifiers in that file, so you can search for them. Every constant quoted here is the value in the code at the time of writing.
+Everything lives in `src/lib.rs` (`src/main.rs` is a three-line wrapper). Names in `code font` (`FLOOR_KNOTS`, `noise_floor`, `match_curve`, ...) are the identifiers in that file, so you can search for them. Every constant quoted here is the value in the code at the time of writing.
 
 ## Overview
 

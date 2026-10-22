@@ -230,7 +230,7 @@ sunscreen "My Song.mp3" /tmp --width
 
 ## Tuning constants
 
-Beyond the flags, the knobs are constants near the top of `src/main.rs` (rebuild after editing):
+Beyond the flags, the knobs are constants near the top of `src/lib.rs` (rebuild after editing):
 
 | Constant | Default | Effect |
 |---|---|---|
@@ -255,11 +255,11 @@ Beyond the flags, the knobs are constants near the top of `src/main.rs` (rebuild
 ## Development
 
 ```sh
-cargo test --release    # 15 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
+cargo test --release    # 16 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
 cargo build --release   # binary at target/release/sunscreen
 ```
 
-Everything is in `src/main.rs`. Dependencies are `hound` (WAV writing), `symphonia` (MP3/WAV decoding), `realfft` and `png`.
+Everything is in `src/lib.rs`; `src/main.rs` just calls `sunscreen::run`. To embed it, call `sunscreen::run_with(args, on_line, cancel)`, which sends report lines to a callback, can be cancelled between them, returns errors instead of panicking, and is safe to run on several threads at once. Dependencies are `hound` (WAV writing), `symphonia` (MP3/WAV decoding), `realfft` and `png`.
 
 ## License
 
