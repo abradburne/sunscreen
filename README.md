@@ -105,9 +105,9 @@ The run also prints a report: the parameters used, the STFT round-trip error (sh
 
 **Problem:** Suno's decoder works on a 5 ms grid (240 samples at 48 kHz) and leaves a waveform that repeats exactly on it for the whole song: a faint buzz at 200 Hz and its harmonics, about 20 dB under the music's high end. Found in 3 of 4 Suno tracks and in none of the human masters tested.
 
-**How:** measures how far a 240-sample repeat stands above chance (Suno: +21 to +23 dB; human masters: about −1 to −2 dB). Above 6 dB it estimates the repeating waveform over sliding 4-second windows and subtracts it. That amounts to notches only a quarter hertz wide at each multiple of 200 Hz.
+**How:** measures how far a 240-sample repeat stands above chance (Suno: +21 to +23 dB; human masters: about −1 to −2 dB). Above 6 dB it takes the waveform's shape from the whole song, fits its level every 4 seconds, and subtracts it. Wherever that template would outweigh the music it sits in, it backs off, so a held note that happens to land on the grid can't ring.
 
-**Measured:** removes −42 to −48 dBFS of buzz; afterwards no repeat remains. Nothing else in the chain changes, and drum hits are untouched. Details, and how it was found, in [docs/debuzz.md](docs/debuzz.md).
+**Measured:** removes −46 to −52 dBFS of buzz. Against a known buzz added to clean human masters, the error is 3 to 13 dB under the buzz, where v0.7's per-window estimate added about as much music damage as it removed. Nothing else in the chain changes, and drum hits are untouched. Details, and how it was found, in [docs/debuzz.md](docs/debuzz.md).
 
 ### Denoise (always on)
 
@@ -255,7 +255,7 @@ Beyond the flags, the knobs are constants near the top of `src/main.rs` (rebuild
 ## Development
 
 ```sh
-cargo test --release    # 14 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
+cargo test --release    # 15 tests: STFT round trip, each stage's intended effect, and that it fails when disabled
 cargo build --release   # binary at target/release/sunscreen
 ```
 

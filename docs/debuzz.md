@@ -37,22 +37,30 @@ Is it a watermark? Probably not. A fixed waveform repeating at the decoder's own
 
 ## Removal: `debuzz`
 
-Per channel, the repeating waveform is estimated locally and subtracted:
+The buzz's shape holds across a song while its level drifts, so per channel the shape is estimated once and only its level is tracked:
 
-1. Hann windows of `DEBUZZ_WINDOW_S` (4 s, rounded to whole periods) at 50% overlap.
-2. In each window, the weighted synchronous average at each of the 240 phases is the local template.
-3. The windows' templates are overlap-added with the same weights and normalised, so the template follows the buzz's slowly drifting level.
-4. Subtract it. Windows with fewer than 50 periods (the file's edges) are skipped as too noisy to trust.
-
-In frequency terms this is a comb of notches about 0.25 Hz wide (1 / 4 s) at every multiple of 200 Hz. Music almost never sits within a quarter hertz of those exact frequencies, so the only cost is the sliver of music inside the notches: on a human track with no grid, the same operation removes content 33 dB below the track.
+1. **Shape:** the synchronous average over the whole channel, one value per phase (240). Over a 3-minute song that averages about 40,000 periods, so music leaks into it about 20 dB less than into a 4 s average.
+2. **Level:** Hann windows of `DEBUZZ_WINDOW_S` (4 s, rounded to whole periods) at 50% overlap. In each window, the weighted synchronous average is projected onto the shape: one gain per window, never negative.
+3. **Template:** gain x shape, overlap-added with the same weights and normalised. Windows with fewer than 50 periods (the file's edges) are skipped as too noisy to trust.
+4. **Per-bin gate:** both the signal and the template go through the denoiser's STFT (2048 / 512 at 48 kHz). In each bin the template is scaled by `min(1, |x|^2 / |t|^2)` before it is subtracted. Real buzz is part of the signal and never outweighs it, so this only bites where the template holds something that isn't there.
 
 It runs before denoise, so the buzz is never mistaken for steady noise floor, and it ends up in `Removed Noise.wav`.
 
+### Why not a fresh average per window (v0.6-v0.7)
+
+The first version averaged each 4 s window on its own: 240 free values per window, estimated from loud music. Two problems came out of a user's salsa track:
+
+- **Ringing on held notes.** Any steady note with a harmonic on a multiple of 200 Hz leaks into the window's average. That means every A at 440 Hz tuning (5 x 440 = 2200, 10 x 440 = 4400). The leaked tone was then subtracted for up to 4 s around the note, including after it had stopped, which put an inverted copy of the harmonic into the silence: a ring that every later stage made louder. On a synthetic bright A5 note (0.7 s on, 1.3 s off), the gaps came out 9 to 12 dB louder than the input, with the note's harmonics +20 to +30 dB. A C6 note, off the grid, was untouched. Now the gaps come out quieter than the input, as they should.
+- **Music damage as large as the buzz.** With a known buzz (French Exit's) added to three clean human masters, the old estimate's error against the truth was 0 to +11 dB *above* the buzz itself, because 240 values fitted to 4 s of loud music carry noise about the size of the buzz. Shape plus gain brings it to between -3 and +0.6 dB on the real (drifting) buzz, and -9 to +0.4 dB on a buzz whose level only drifts. Per-band gains (four bands) did worse than one gain, since they add back degrees of freedom.
+
+The remaining cost is a dent of about 4 dB in on-grid harmonics *while* such a note plays, in the worst case of a note phase-locked across the whole song (a synthetic oscillator). Real performances restart their phase with each note, so it averages out of the shape.
+
 ## Measured
 
-- **Removed:** -41.6 / -44.9 / -47.7 dBFS (Glass Hearts / Warm Current / French Exit). Afterwards the 240-sample repeat drops from +20...+28 dB to below chance in every band.
-- **Chain unchanged otherwise:** on Glass Hearts the denoiser's band attenuation is within 0.07 dB, and pre-hit energy is identical (-14.9 dB). It costs about 0.8 s on a 5-minute track.
+- **Removed:** -45.9 / -49.7 / -52.3 dBFS (Glass Hearts / Warm Current / French Exit), about 4.5 dB less than v0.7's -41.6 / -44.9 / -47.7. The difference is music the old estimate took along with the buzz.
+- **Chain unchanged otherwise:** on Glass Hearts the denoiser's band attenuation is within 0.07 dB, and pre-hit energy is identical (-14.9 dB). It costs under a second on a 5-minute track.
 - **The haze is separate:** removing the buzz does not reduce what the denoiser takes out, so the buzz is its own defect.
+- **Don't judge it by the repeat left afterwards.** Subtracting a per-window average drives the whole-song fold to zero by construction, even where it adds error. Only a known buzz added to known music measures removal honestly.
 
 ## Constants
 
@@ -60,8 +68,10 @@ It runs before denoise, so the buzz is never mistaken for steady noise floor, an
 |---|---|---|
 | `DEBUZZ_HZ` | 200 | grid rate; period `sr / 200` samples |
 | `DEBUZZ_MIN_DB` | 6 | repeat SNR to count as present |
-| `DEBUZZ_WINDOW_S` | 4 | estimation window; sets notch width (~1/4 Hz) and how fast the level is tracked |
+| `DEBUZZ_WINDOW_S` | 4 | level-tracking window |
 
-## Test
+## Tests
+
+`debuzz_does_not_ring_after_on_grid_note`: stereo noise, a 240-sample pattern, and a 2200 Hz note held 1 s in every 4, phase-locked so it lands in the shape. The energy in the seconds after each note must be no higher than the input's. Without the per-bin gate it reads +17.9 dB.
 
 `debuzz_removes_decoder_grid`: stereo noise plus a fixed random 240-sample waveform 26 dB under it. Plain noise must read below `DEBUZZ_MIN_DB`, the mixture above 15 dB, and the output below 3 dB; the output minus the clean noise must be under 6% of the noise level (what remains is the noise inside the notches, about 28 dB down). It fails if debuzz is disabled.

@@ -1110,17 +1110,24 @@ fn grid_snr(x: &[Vec<f64>], sr: u32, per: usize) -> f64 {
     10.0 * (mean_sq / (var / k as f64 + 1e-30)).log10()
 }
 
-/// Subtract a waveform that repeats every `per` samples. Per channel: synchronous
-/// averages over Hann windows of DEBUZZ_WINDOW_S at 50% overlap, overlap-added
-/// into a slowly varying template. In frequency terms, notches ~1/window wide at
-/// every multiple of the grid rate, so the music around them is untouched.
+/// Subtract a waveform that repeats every `per` samples. Its shape holds across a
+/// song while its level drifts, so per channel: one whole-song synchronous average
+/// for the shape, then one gain per Hann window of DEBUZZ_WINDOW_S (50% overlap),
+/// overlap-added. Fitting one number per window instead of `per` keeps the music's
+/// own leakage into the estimate ~20 dB lower than a per-window average.
 /// Windows holding fewer than 50 periods (file edges) are skipped as too noisy.
 fn debuzz(x: &[Vec<f64>], sr: u32, per: usize) -> Vec<Vec<f64>> {
     let len = x[0].len();
     let w_len = ((DEBUZZ_WINDOW_S * sr as f64) as usize / per * per).max(per);
     let hop = w_len / 2;
     let win = hann(w_len);
+    let p = params_for(sr);
+    let st = Stft::new(p.n, p.hop, len);
     x.iter().map(|c| {
+        let k = (len / per).max(1);
+        let mut shape = vec![0.0; per];
+        for (i, v) in c[..k * per].iter().enumerate() { shape[i % per] += v / k as f64; }
+        let energy = shape.iter().map(|v| v * v).sum::<f64>() + 1e-30;
         let (mut tmpl, mut norm) = (vec![0.0; len], vec![0.0; len]);
         let mut s = -(hop as isize);
         while s < len as isize {
@@ -1128,15 +1135,25 @@ fn debuzz(x: &[Vec<f64>], sr: u32, per: usize) -> Vec<Vec<f64>> {
             if b - a >= 50 * per {
                 let (mut num, mut den) = (vec![0.0; per], vec![0.0; per]);
                 for i in a..b { let w = win[(i as isize - s) as usize]; num[i % per] += c[i] * w; den[i % per] += w; }
+                let g = ((0..per).map(|j| num[j] / den[j] * shape[j]).sum::<f64>() / energy).max(0.0);
                 for i in a..b {
                     let w = win[(i as isize - s) as usize];
-                    tmpl[i] += num[i % per] / den[i % per] * w;
+                    tmpl[i] += g * shape[i % per] * w;
                     norm[i] += w;
                 }
             }
             s += hop as isize;
         }
-        c.iter().zip(tmpl.iter().zip(&norm)).map(|(v, (t, n))| if *n > 1e-9 { v - t / n } else { *v }).collect()
+        let t: Vec<f64> = tmpl.iter().zip(&norm).map(|(t, n)| if *n > 1e-9 { t / n } else { 0.0 }).collect();
+        // A steady note on a multiple of 200 Hz (any A at 440 Hz tuning: 5 x 440 = 2200)
+        // can leak into the shape, and subtracting it where the note has stopped rings
+        // for seconds (a salsa trumpet did). Real buzz never outweighs the signal it sits in, so per
+        // STFT bin the template is scaled by min(1, |x|^2 / |t|^2).
+        let mut ts = vec![Complex::default(); st.bins()];
+        st.resynth(c, |f, s| {
+            st.frame(&t, f, &mut ts);
+            for (a, b) in s.iter_mut().zip(&ts) { *a -= b * (a.norm_sqr() / (b.norm_sqr() + 1e-30)).min(1.0); }
+        })
     }).collect()
 }
 
@@ -1714,6 +1731,28 @@ mod tests {
         // noise is only what falls in the notches, ~28 dB under it (the pattern is -26 dB)
         let err: Vec<Vec<f64>> = y.iter().zip(&noise).map(|(a, b)| a.iter().zip(b).map(|(u, v)| u - v).collect()).collect();
         assert!(rms(&err) < 0.06 * rms(&noise), "residual {} vs noise {}", rms(&err), rms(&noise));
+    }
+
+    #[test]
+    fn debuzz_does_not_ring_after_on_grid_note() {
+        // a held 2200 Hz note (11 x 200 Hz, e.g. the 5th harmonic of A 440) for 1 s in
+        // every 4, phase-locked across the song so it lands in the grid's shape
+        let sr = 48000u32;
+        let per = grid_period(sr).unwrap();
+        let n = 20 * sr as usize;
+        let mut seed = 7u64;
+        let mut rnd = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1); (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5 };
+        let pattern: Vec<f64> = (0..per).map(|_| 0.01 * rnd()).collect();
+        let x: Vec<Vec<f64>> = (0..2).map(|_| (0..n).map(|i| {
+            let on = (i / sr as usize) % 4 == 0;
+            0.02 * rnd() + pattern[i % per] + if on { 0.5 * (2.0 * PI * 2200.0 * i as f64 / sr as f64).sin() } else { 0.0 }
+        }).collect()).collect();
+        let y = debuzz(&x, sr, per);
+        // the seconds after each note: subtraction may only take energy away
+        let gaps = |c: &[f64]| -> f64 { (0..5).flat_map(|k| (k * 4 + 1) * sr as usize + sr as usize / 4..(k * 4 + 3) * sr as usize).map(|i| c[i] * c[i]).sum() };
+        for (a, b) in x.iter().zip(&y) {
+            assert!(gaps(b) <= gaps(a), "rings after the note: gap energy {:.1} dB vs input", 10.0 * (gaps(b) / gaps(a)).log10());
+        }
     }
 
     #[test]

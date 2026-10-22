@@ -19,6 +19,7 @@ Note: tests that call `params_for` directly run with the gate **off** (the CLI t
 | `lufs_reads_reference_sine` | stereo 1 kHz sine, amplitude 0.1, at 48 and 44.1 kHz | reads -20 LUFS within 0.1 |
 | `true_peak_sees_between_samples` | fs/4 sine at 45 degrees (every sample 0.707 of the true peak) | sample peak -3.01 dB; true peak within 0.2 dB of 0 |
 | `master_hits_loudness_and_ceiling` | quiet stereo noise with a sharp hit every 0.5 s | output within 0.1 LU of -14 LUFS, true peak at or under -1 dBTP, more than 1 dB of limiting |
+| `debuzz_does_not_ring_after_on_grid_note` | stereo noise, a 240-sample pattern, and a phase-locked 2200 Hz note held 1 s in every 4 | energy in the seconds after each note no higher than the input's (without the per-bin gate: +17.9 dB) |
 | `debuzz_removes_decoder_grid` | stereo noise plus a fixed random 240-sample waveform 26 dB under it | plain noise not flagged; mixture above 15 dB; output below 3 dB; residual against the clean noise under 6% of it |
 | `edge_fade_silences_ends_only` | 1 s of constant 0.5, stereo | first and last samples silent, fade-in monotonic, everything beyond the 5 ms ramps untouched |
 | `match_follows_reference_tilt_capped` | white noise; a reference is the same noise with a smooth `tanh` tilt of 1.5 dB around 1 kHz | the correction between 250 Hz and 4 kHz matches the tilt to within 0.6 dB; with a 12 dB tilt no value exceeds `MATCH_MAX_DB`; the correction at 23 kHz is zero (fade) |
