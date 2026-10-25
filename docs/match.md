@@ -12,7 +12,7 @@ Every Suno track has its own tonal tilt, and the tilts do not share a direction.
 
 The 12 references also agree *within* a track: their individual corrections for a given Suno track mostly share a sign (to about +/-2 dB). The built-in target's correction lands within 0.7 dB of the average of the 12 single-reference corrections.
 
-**A reference file: `--match=ref.wav`.** `ltas_target` computes that file's long-term spectrum with the STFT parameters for *its* sample rate (so it works if the reference has a different rate), and returns a function of Hz that interpolates linearly between bins and clamps to the last bin. Use this to aim at a genre or a song you like.
+**A reference file: `--match=ref.wav`.** `ltas_target` computes that file's long-term spectrum with the STFT parameters for *its* sample rate (so it works if the reference has a different rate), and returns a function of Hz that interpolates linearly between bins and clamps to the last bin. Use this to aim at a genre or a song you like. The reference can be MP3, WAV, FLAC or M4A; AAC and lossless copies of the same master give curves within 0.1 dB of each other. The report's `match` line names the target (`toward <file>` or `toward pop target`).
 
 ## Algorithm: `match_curve(p, x, sr, target, cap)`
 

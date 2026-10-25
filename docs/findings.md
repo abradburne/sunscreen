@@ -169,10 +169,21 @@ After the buzz turned up in a place the earlier searches never looked, a sweep c
 | Crest factor | 12-15 dB | 10-11.6 dB | Suno is less compressed; `--master` covers loudness |
 | DC, sub-20 Hz, L/R timing, polarity | normal | normal | Nothing |
 
+### Endings
+
+Last 250 ms before any trailing silence, in dB re the song (mean RMS of its louder half of 1 s blocks): human masters (16 Utada tracks) -52 to -82 dB, then 1.4 to 2.5 s of digital silence. Suno: 9 of 21 between -38 and -1 dB, so they stop mid-sound. Built: those get a 3 s fade-out ending at the last sound (threshold -40 dB). It flags exactly those 9 and no human master.
+
+### Suno v6 (2026-10, 3 WAVs)
+
+Same 240-sample decoder buzz (+21 to +22 dB; debuzz works). Highs reach about 20 kHz (v5: 17.8 to 18.1). Width is healthy from 1 to 13 kHz but the top octave still collapses (16-20 kHz side/mid -20 to -25 dB), so `--widen` still helps. Loudness -16.7 to -17.0 LUFS. 2 of 3 stop mid-sound. The fluttering haze is mostly gone: 7-12 kHz flutter 3.9 to 4.6 dB (v5 up to 17, human masters 5.5 to 10), and the floor sits within 10 to 14 dB of the level as on human masters. The denoiser, built for v5, read the steady wash as haze and cut 1 to 1.4 dB of the highs, slightly duller by ear; its strength now follows the flutter ([denoise.md](denoise.md)). `--excite` is skipped above a 19.5 kHz cutoff.
+
+### Album mode: measured, not built
+
+Does a batch need one shared tone target? Per-band spread of the third-octave profile across an album's songs, 63 Hz to 10 kHz: Warm Current (10 songs) 1.31 dB originally, 0.91 after the full chain; Suddenly Summer (7) 1.01 to 0.89. Every song already goes to the same pop target and the same loudness, and that spread is already tighter than the 12 commercial masters behind the pop target (1 to 2.7 dB). A simulated album-mean target instead of the pop target gains only 0.05 to 0.2 dB.
+
 ## Open ideas
 
 - A small neural restoration model. The codec check above shows EnCodec and DAC don't reproduce Suno's haze, so training pairs need a different simulator, or self-supervision on Suno files themselves.
-- Abrupt endings: some tracks stop mid-phrase. The edge fade removes the click; a longer optional fade-out would smooth the ending itself.
 - The second grid artifact: the high band's power ripples 3 to 3.7 dB over each 240-sample cycle, with a frequency-dependent phase (likely spectral imaging from the decoder's upsampler). Debuzz doesn't touch it; removing it needs cyclic (frequency-shift) filtering.
 - Stems mode: each stem has real noise-only gaps, so the floor could be measured instead of estimated. The first step would be comparing a stem-gap floor with the rolling floor.
 

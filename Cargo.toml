@@ -1,6 +1,6 @@
 [package]
 name = "sunscreen"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 license = "MIT"
 
@@ -8,4 +8,4 @@ license = "MIT"
 hound = "3.5"
 png = "0.17"
 realfft = "3"
-symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "pcm"] }
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "pcm", "flac", "isomp4", "aac", "alac"] }

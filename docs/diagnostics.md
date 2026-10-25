@@ -19,6 +19,7 @@ A recurring principle: a measurement is only trusted once a control (a signal wh
 | `--profile` | no | third-octave long-term spectrum |
 | `--floors` | no | noise floor against music level |
 | `--holes` | no | rate of MP3 "spectral holes" |
+| `--periods` | no | waveform repeats at any period: decoder grids |
 
 ## `--flutter`
 
@@ -121,6 +122,10 @@ Question: is the haze a fixed floor, or does it follow the music?
 For each of the three upper bands and each 1-second block: level `L` = mean power over the block's frames and bins; floor `F` = the 15th percentile of those values. Blocks are sorted by `L` and split into five quintiles from quietest to loudest. For each quintile print the mean `L` in dB and the mean `10 log10(F / L)`.
 
 How to read it: additive constant haze pins quiet blocks at a fixed floor, so `F/L` rises toward 0 dB in the quietest quintile. Haze that scales with the music keeps `F/L` roughly constant or lets it fall. Control: a human-made track with steady hiss added reads quietest-quintile `F/L` of -14.7 / -14.3 / -16.7 dB in the 3.5 k / 7 k / 12 k+ bands, up from -15.8 / -22.0 / -27.6 without the hiss. On Suno the quietest blocks sit further below the floor, not at it: the haze follows the music. The 12 kHz+ band is unreliable here because the codec lowpass leaves empty bins that drag the percentile to -50 to -90 dB.
+
+## `--periods`
+
+Scores every period from `sr/1000` to `sr/10` samples for an exactly repeating waveform (`grid_scan`), prints the eight best, then the exact whole-song fold SNR and repeating power at 1-4x each of the top four. See [debuzz.md](debuzz.md#other-periods---periods).
 
 ## `--holes`
 

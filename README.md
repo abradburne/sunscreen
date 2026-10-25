@@ -2,7 +2,7 @@
 
 *Protection from Suno haze.*
 
-Cleans up tracks downloaded from Suno. It's a single Rust binary (or a drag-and-drop Mac app) that reads MP3 or WAV and writes 24-bit WAV.
+Cleans up tracks downloaded from Suno. It's a single Rust binary (or a drag-and-drop Mac app) that reads MP3, WAV, FLAC or M4A and writes 24-bit WAV.
 
 ## What it does
 
@@ -13,7 +13,7 @@ Suno songs share a few audible flaws. sunscreen fixes each one in a separate, ge
 3. **Steadies what's left** (`--smooth`). The static doesn't just sit there; it flutters. Evening out the flutter removes most of the "off-station" character without cutting any more.
 4. **Widens the top end** (`--widen`). Suno's highs collapse to near-mono. sunscreen gives the cymbals and air back the same width the rest of the track already has. The mono fold-down is unchanged.
 5. **Rebuilds the missing top octave** (`--excite`). Suno's MP3s stop dead at about 18 kHz. sunscreen fills that region from the music just below it, the way HE-AAC does.
-6. **Balances the tone like a commercial master** (`--match`). Each Suno track comes out with its own tilt (one boomy, one harsh). sunscreen compares it with the average of 12 commercially mastered pop songs and corrects it gently (±3 dB at most, without changing loudness). Or give it a song you love: `--match=ref.wav`.
+6. **Balances the tone like a commercial master** (`--match`). Each Suno track comes out with its own tilt (one boomy, one harsh). sunscreen compares it with the average of 12 commercially mastered pop songs and corrects it gently (±3 dB at most, without changing loudness). Or give it a song you love: `--match=ref.m4a` (MP3, WAV, FLAC or M4A; Apple Music downloads are copy-protected and can't be read).
 7. **Masters the level** (`--master`). Suno tracks arrive anywhere from −11.6 to −15.6 LUFS. sunscreen sets them all to the streaming standard (−14 LUFS) with a true-peak limiter at −1 dBTP, so an album plays at an even level and survives Spotify's re-encoding without clipping.
 
 Every step exists because a measurement on real Suno tracks showed the problem. Ideas that measured as non-problems (spectral holes, phase smear, soft attacks, repeat averaging) were dropped. [docs/](docs/README.md) explains exactly how every step works, and [docs/findings.md](docs/findings.md) has the measurements.
@@ -67,12 +67,12 @@ for f in *.mp3; do sunscreen "$f" cleaned "${f%.mp3}" --smooth --widen --excite 
 ## Usage
 
 ```
-sunscreen <in.wav|in.mp3> [out_dir] [title] [--no-gate] [--no-debuzz] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]] [--master[=LUFS]]
+sunscreen <in.mp3|in.wav|in.flac|in.m4a> [out_dir] [title] [--no-gate] [--no-debuzz] [--strength=x] [--smooth[=ms]] [--widen[=x]] [--excite[=dB]] [--match[=ref.wav]] [--master[=LUFS]]
 ```
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `in` | — | MP3 or WAV (16/24/32-bit int or float), any sample rate, mono or stereo. For FLAC/M4A, convert first: `ffmpeg -i song.m4a song.wav` |
+| `in` | — | MP3, WAV (16/24/32-bit int or float), FLAC, or M4A (AAC or Apple Lossless); any sample rate, mono or stereo. For anything else, convert first: `ffmpeg -i song.ogg song.wav` |
 | `out_dir` | the input's folder | Where outputs go (created if missing) |
 | `title` | the input's file name | Prefix for output file names |
 
@@ -84,7 +84,7 @@ Each run always writes:
 
 | File | What it is |
 |---|---|
-| `<title> - Clean.wav` | The denoised track. Every output file also gets a 5 ms fade at each end: Suno files often start or stop mid-sound, which clicks on play and stop. |
+| `<title> - Clean.wav` | The denoised track. Every output file also gets a 5 ms fade at each end: Suno files often start or stop mid-sound, which clicks on play and stop. A song that stops dead (its last 250 ms within 40 dB of the song's level; 9 of 21 Suno tracks, no human master) gets a 3 s fade-out instead. |
 | `<title> - Removed Noise.wav` | Original minus Clean, sample for sample. Listen to it to hear what was taken. If you hear drums or vocals in it, the denoise is taking music. |
 | `<title> - Spectrogram.png` | The densest 10 s: original, removed, and (with `--excite`) the `--excite` output (before `--match`), each panel normalised separately |
 | `<title> - Report.txt` | The run report printed in the terminal, saved for later |
@@ -120,6 +120,7 @@ The run also prints a report: the parameters used, the STFT round-trip error (sh
 - **Smoothing:** the gain mask is blurred across time and frequency to prevent the "musical noise" warble.
 - **Stereo:** one mask for both channels, so the stereo image can't shift. The original phase is kept.
 - **Drum-hit protection:** detected hits (about 3–5 per second) get no cut for about 40 ms. Without this, the blur pulls attenuation from the quiet frames before a hit onto the attack and dulls it. The hit itself covers any haze let through.
+- **Strength follows the haze:** Suno v5's haze flutters (its 7–12 kHz level jumps 9–17 dB from moment to moment). Suno v6 renders the highs as a steady wash (about 4 dB) that the floor estimate mistakes for haze; at full strength the cut came out slightly duller by ear. The cut in dB is scaled by flutter ÷ 8.5 dB, between 0.4 and 1: v5 haze gets the full cut, v6 about half, which removes about what a human master loses. `--strength=x` sets it by hand.
 
 **Expect:** about −0.2 to −0.7 dB overall, more in the highs. It's subtle by design.
 
@@ -155,7 +156,7 @@ The run also prints a report: the parameters used, the STFT round-trip error (sh
 
 ### `--excite[=dB]` — rebuild the top end above the MP3 cutoff (default −3 dB)
 
-**Problem:** Suno MP3s stop at about 18 kHz (the WAVs at about 20 kHz).
+**Problem:** Suno v5 MP3s stop at about 18 kHz. Files that already reach 19.5 kHz (v6 WAVs reach about 20 kHz) are skipped: nothing audible is missing.
 
 **How:** spectral band replication, the trick HE-AAC uses:
 - **Find the cutoff:** where the long-term spectrum falls 25 dB below the 8–12 kHz level.

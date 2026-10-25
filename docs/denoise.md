@@ -138,8 +138,15 @@ A rolling percentile tracks both effects: each second of music gets its own floo
 
 A faster floor was tried: block lengths of 1.0, 0.5 and 0.25 s on Glass Hearts gave RMS changes of -0.46, -0.56 and -0.65 dB and `env corr` of 0.419, 0.435 and 0.452. Neither metric can referee the choice (a floor that follows the music faster will naturally correlate more with it), so it stayed at 1.0 s.
 
+## Strength: `haze_strength`
+
+Before the gain is computed, `flutter_grid` measures the haze's flutter on the same power grid and floor (see `--flutter` in [diagnostics.md](diagnostics.md)), and the 7-12 kHz value sets the strength: `clamp(flutter / STRENGTH_FULL_FLUTTER_DB, STRENGTH_MIN, 1)` with 8.5 dB and 0.4. The blurred, gated gain in dB is multiplied by it. No haze bins at all (NaN) means full strength. `--strength=x` overrides it; tests that use `params_for` run at 1.
+
+Why: Suno v5's haze flutters 9 to 17 dB in that band. Suno v6 (2026-10) renders the highs as a steady wash: 3.9 to 4.6 dB, below human masters (5.5 to 10). The floor estimate reads that wash as haze, and at full strength the removed signal sat 13 to 15 dB under Clean in the highs, against 19 to 25 dB on v5 and 17 to 20 dB on a human master; by ear Clean was slightly duller. At v6's auto strength (0.46 to 0.54) the 7-12 kHz cut drops from about -1.0 to -0.3 to -0.55 dB, about what a human master loses (-0.59).
+
 ## What `Report.txt` tells you
 
+- `strength`: the cleaning strength and the 7-12 kHz haze flutter it came from.
 - `onsets`: number of protected hits and rate.
 - `rms change`: overall level change of Clean versus original.
 - `band` lines: energy-weighted attenuation per `BANDS` region, `10 log10( sum(g^2 P) / sum(P) )` using the actual applied gain and the original per-channel power.

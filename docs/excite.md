@@ -16,8 +16,8 @@ Input is the previous stage's output. Let `hz_per = sr / n`, `bin(hz) = round(hz
 
 1. **Long-term spectrum.** `l = ltas(...)`: the mean power per bin over all frames and channels, in dB.
 2. **Reference level.** The median of `l` over 8 to 12 kHz.
-3. **Find the cutoff.** Scan down from `top` to `bin(10000)` and take the highest bin whose long-term level is above `reference - CUTOFF_DROP_DB` (`CUTOFF_DROP_DB = 25`); the cutoff `c` is that bin plus 1. If no bin qualifies, the function returns `None` and the stage is skipped (`excite no codec lowpass found, skipped`).
-4. **Full-band guard.** If `c >= top - bin(500)` the file is effectively full-band and the stage is also skipped.
+3. **Find the cutoff.** Scan down from `top` to `bin(10000)` and take the highest bin whose long-term level is above `reference - CUTOFF_DROP_DB` (`CUTOFF_DROP_DB = 25`); the cutoff `c` is that bin plus 1. If no bin qualifies, the function returns `None` and the stage is skipped (same message).
+4. **Full-band guard.** If `c >= top - bin(500)`, or the cutoff is at or above `EXCITE_MIN_CUTOFF_HZ` (19.5 kHz; Suno v6 WAVs reach about 20 kHz), nothing audible is missing and the stage is skipped (`excite no codec lowpass below 19500 Hz, skipped`).
 5. **Fit the slope.** Least-squares fit of `l` (dB) against `log2(Hz)` over bins `c/2 .. 0.9c`. This gives a slope in dB per octave and a line through the mean of those points.
 6. **Fill start.** `start = 0.9c` (integer arithmetic). Starting inside the codec's own roll-off, at 90 percent of the cutoff, avoids a notch at the cutoff.
 7. **Shift.** `k = ceil( (top - 0.8c) / (n/hop) ) * (n/hop)` bins. The source for target bin `f` is bin `f - k`. The rounding to a multiple of `n / hop` (4) means the highest source bin `top - k` is at or below `0.8c`, clear of the sparse, "holey" bins near the cutoff. The reported `shift` is `k * hz_per`.
@@ -64,4 +64,4 @@ It is plausible air, not the real lost detail. If cymbals turn metallic, use `--
 
 ## Test
 
-`excite_fills_above_codec_lowpass_only`: a brick-wall at 16 kHz is detected within 200 Hz, a full-band input is skipped, nothing below 0.9c changes by more than 0.01 dB, and 18 kHz gains more than 40 dB. See [testing.md](testing.md).
+`excite_fills_above_codec_lowpass_only`: a brick-wall at 16 kHz is detected within 200 Hz, a full-band input and a 20 kHz lowpass are skipped, nothing below 0.9c changes by more than 0.01 dB, and 18 kHz gains more than 40 dB. See [testing.md](testing.md).

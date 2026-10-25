@@ -30,10 +30,19 @@ Is it a watermark? Probably not. A fixed waveform repeating at the decoder's own
 
 ## Detection: `grid_snr`
 
-1. `grid_period`: the grid period is `sr / DEBUZZ_HZ` (240 at 48 kHz). If 200 Hz doesn't divide the sample rate evenly (44.1 kHz gives 220.5), there can be no sample-locked grid, and the stage is off.
+1. `grid_period`: the fewest whole samples that hold whole cycles of 200 Hz, `sr / gcd(sr, DEBUZZ_HZ)`: 240 at 48 kHz, 441 (two cycles) at 44.1 kHz, so a Suno song resampled to 44.1 kHz is still caught (+18.6 dB on Warm Current, -47.9 dBFS removed against -49.7 at 48 kHz). At odd rates where that would take more than 4 cycles the stage is off.
 2. Mix to mono and keep content above 1 kHz (`band_pass`: one full-length FFT with bins zeroed), so bass doesn't drown the measurement.
 3. Fold at the period: for each of the 240 phases, the mean and variance over all `k` periods in the track.
 4. SNR = energy of the synchronous average divided by `variance / k`, the energy random content would leave in it. Content with no grid reads about 0 dB; the stage acts at `DEBUZZ_MIN_DB` (6 dB).
+
+### Other periods (`--periods`)
+
+`grid_scan` scores every period from `sr/1000` to `sr/10` at once from the autocorrelation (mono, above 1 kHz, averaged over ~11 s blocks): `10 log10(1 + 2 sum_d rho(d * per))`, the fold SNR over a half-block window. `--periods` prints the top eight, then the exact whole-song fold SNR and the repeating part's power for the top four at 1-4x their period. On Suno the top periods are all divisors of 240 (48, 60, 80, 120); most of the buzz energy repeats every 60 samples (800 Hz).
+
+A general any-period debuzz was measured and not built (2026-10-23):
+- Human masters also hold exactly periodic content: The Workout (Utada) reads +11.2 dB at 119 samples, Apple And Cinnamon +7.5 dB at 239. An unknown period would need a threshold near 14 dB (Suno: 15.8 to 23.5).
+- The period can't be picked by captured energy: on Suno it keeps rising with multiples (240: -26.2 dB, 480: -25.3, 960: -24.4 re the band) as held notes leak in, and the top-scoring period (60) catches only part of the buzz.
+Without samples from other generators there is nothing to calibrate against; `--periods` is the tool for when they arrive.
 
 ## Removal: `debuzz`
 
@@ -66,7 +75,8 @@ The remaining cost is a dent of about 4 dB in on-grid harmonics *while* such a n
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `DEBUZZ_HZ` | 200 | grid rate; period `sr / 200` samples |
+| `DEBUZZ_HZ` | 200 | grid rate; period `sr / gcd(sr, 200)` samples (whole cycles) |
+| `GRID_BLOCK` | 2^19 | `grid_scan` autocorrelation block (~11 s at 48 kHz) |
 | `DEBUZZ_MIN_DB` | 6 | repeat SNR to count as present |
 | `DEBUZZ_WINDOW_S` | 4 | level-tracking window |
 
@@ -74,4 +84,4 @@ The remaining cost is a dent of about 4 dB in on-grid harmonics *while* such a n
 
 `debuzz_does_not_ring_after_on_grid_note`: stereo noise, a 240-sample pattern, and a 2200 Hz note held 1 s in every 4, phase-locked so it lands in the shape. The energy in the seconds after each note must be no higher than the input's. Without the per-bin gate it reads +17.9 dB.
 
-`debuzz_removes_decoder_grid`: stereo noise plus a fixed random 240-sample waveform 26 dB under it. Plain noise must read below `DEBUZZ_MIN_DB`, the mixture above 15 dB, and the output below 3 dB; the output minus the clean noise must be under 6% of the noise level (what remains is the noise inside the notches, about 28 dB down). It fails if debuzz is disabled.
+`debuzz_removes_decoder_grid`: at 48 and 44.1 kHz, stereo noise plus a fixed random one-period waveform (240 / 441 samples) 26 dB under it. Plain noise must read below `DEBUZZ_MIN_DB`, the mixture above 15 dB, and the output below 3 dB; the output minus the clean noise must be under 6% of the noise level (what remains is the noise inside the notches, about 28 dB down). It fails if debuzz is disabled.
